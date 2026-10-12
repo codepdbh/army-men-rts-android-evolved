@@ -1,0 +1,6 @@
+[
+  { "name": "C++ static constructors", "start": "0x00689000", "end": "0x0068B688" },
+  { "name": "CRT initializers", "start": "0x0068B68C", "end": "0x0068B6A0" },
+  { "name": "CRT pre-terminators", "start": "0x0068B6A4", "end": "0x0068B6AC" },
+  { "name": "CRT terminators", "start": "0x0068B6B0", "end": "0x0068B6B8" }
+]

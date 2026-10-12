@@ -12,12 +12,14 @@ import android.view.Gravity;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.ScrollView;
 import java.io.File;
 
 /** Early Android port diagnostics against the owner's game files. */
 public final class LauncherActivity extends Activity {
     static { System.loadLibrary("armymen_rts_android"); }
     private static native String nativeProbe(String dataPath);
+    static native String nativeBootProbe(String dataPath);
     private TextView report;
     private File gameFolder() {
         return new File(Environment.getExternalStorageDirectory(), "armymenrts");
@@ -47,7 +49,21 @@ public final class LauncherActivity extends Activity {
                         Uri.parse("package:"+getPackageName())));
             else requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE},1);
         });layout.addView(access);
-        setContentView(layout);
+        Button boot=new Button(this);boot.setText("Probar arranque x86");
+        boot.setOnClickListener(view->{
+            boot.setEnabled(false);
+            new Thread(()->{
+                String result=nativeBootProbe(gameFolder().getAbsolutePath());
+                runOnUiThread(()->{
+                    report.append("\nArranque: "+result);
+                    boot.setEnabled(true);
+                });
+            },"amrts-boot-probe").start();
+        });layout.addView(boot);
+        ScrollView scroll=new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(layout);
+        setContentView(scroll);
     }
     @Override protected void onResume(){super.onResume();
         boolean allowed=Build.VERSION.SDK_INT>=30?Environment.isExternalStorageManager():

@@ -1,14 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
 project(ArmyMenRTSAndroid C CXX)
-add_library(armymen_rts_android SHARED bootstrap.cpp)
+add_library(armymen_rts_android SHARED bootstrap.cpp pe_image.cpp pe_version.cpp)
 target_compile_features(armymen_rts_android PRIVATE cxx_std_17)
+target_compile_options(armymen_rts_android PRIVATE -fno-strict-aliasing -ffp-contract=off)
 target_link_libraries(armymen_rts_android PRIVATE android log vulkan)
 
-# Build the lifted ARM64 translation units independently while the DDraw HLE
-# and Windows service layer are being adapted. They are deliberately not linked
-# into the probe APK until the guest can enter and render safely.
+# The minimal diagnostic APK builds without local game-derived sources.
+# The linked variant runs a bounded guest boot probe through the Win32 HLE.
 option(AMRTS_COMPILE_GUEST "Syntax-check all lifted Army Men RTS code" OFF)
-if(AMRTS_COMPILE_GUEST)
+option(AMRTS_LINK_GUEST "Link translated game code into the Android APK" OFF)
+if(AMRTS_COMPILE_GUEST OR AMRTS_LINK_GUEST)
     get_filename_component(AMRTS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
     set(GEN_DIR "${AMRTS_ROOT}/src/recomp/gen")
     file(GLOB GEN_SOURCES CONFIGURE_DEPENDS "${GEN_DIR}/recomp_[0-9][0-9][0-9][0-9].c")
@@ -17,5 +18,13 @@ if(AMRTS_COMPILE_GUEST)
     endif()
     add_library(amrts_guest OBJECT ${GEN_SOURCES})
     target_include_directories(amrts_guest PRIVATE "${AMRTS_ROOT}/../pcrecomp/runtime/recomp32" "${GEN_DIR}")
-    target_compile_options(amrts_guest PRIVATE -O0 -w -fwrapv -fno-strict-aliasing -include "${CMAKE_CURRENT_SOURCE_DIR}/guest_clock.h")
+    target_compile_options(amrts_guest PRIVATE -O0 -g0 -w -fwrapv -fno-strict-aliasing -fexceptions -ffp-contract=off -include "${CMAKE_CURRENT_SOURCE_DIR}/guest_clock.h")
+    if(AMRTS_LINK_GUEST)
+        target_sources(armymen_rts_android PRIVATE guest_machine.cpp
+            "${GEN_DIR}/recomp_dispatch.c" $<TARGET_OBJECTS:amrts_guest>)
+        target_include_directories(armymen_rts_android PRIVATE "${AMRTS_ROOT}/../pcrecomp/runtime/recomp32" "${GEN_DIR}")
+        target_compile_definitions(armymen_rts_android PRIVATE AMRTS_LINK_GUEST)
+        target_compile_definitions(amrts_guest PRIVATE RECOMP_STRICT_ICALL RECOMP_YIELD_EVERY=128)
+        target_link_libraries(armymen_rts_android PRIVATE m)
+    endif()
 endif()

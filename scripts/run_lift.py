@@ -16,7 +16,7 @@
 
 Everything written here is derived from the game binary and is gitignored.
 """
-import json, os, sys, time, collections
+import json, os, sys, time, collections, struct
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PCRECOMP = os.environ.get("PCRECOMP", os.path.normpath(os.path.join(HERE, "..", "..", "pcrecomp")))
@@ -37,6 +37,27 @@ def cmd_catalog(exe, seeds_path, out):
     for e in json.load(open(seeds_path)):
         a = e.get("address") if isinstance(e, dict) else e
         seeds.add(int(a, 0) if isinstance(a, str) else a)
+    # MSVC's initterm tables hold many real function entries that are only
+    # reached indirectly. Discover these before descent, including jump stubs.
+    ranges_path = os.path.join(HERE, "..", "config", "seed_ranges.json")
+    if os.path.exists(ranges_path):
+        import pefile
+        image = pefile.PE(exe).get_memory_mapped_image()
+        added = 0
+        for table in json.load(open(ranges_path)):
+            start, end = int(table["start"], 0), int(table["end"], 0)
+            if start < info.image_base or end < start or (end - start) % 4 or end - info.image_base > len(image):
+                raise ValueError("Invalid function-pointer seed range")
+            for slot in range(start, end, 4):
+                target = struct.unpack_from("<I", image, slot - info.image_base)[0]
+                if not target:
+                    continue
+                if not info.code_start <= target < info.code_end:
+                    raise ValueError(f"Non-code pointer {target:#x} in {table['name']}")
+                if target not in seeds:
+                    added += 1
+                    seeds.add(target)
+        print(f"[*] added {added} initializer-table seeds", flush=True)
     dis = Disassembler(data, info.image_base, info.sections)
     t = time.time()
     funcs = dis.find_functions(info.code_start, info.code_end, iat, seeds=seeds,
@@ -213,5 +234,3 @@ if __name__ == "__main__":
         cmd_lift(a[1], a[2], a[3], split, names)
     else:
         sys.exit(__doc__)
-
-\n
