@@ -1,0 +1,18 @@
+﻿# Game data and generated lifted code stay local.
+work/
+src/recomp/gen/
+build/
+*.exe
+*.EXE
+*.dll
+*.DLL
+*.x
+*.x-s
+*.log
+*.apk
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+android/gradle-wrapper.jar
+android/gradle-wrapper.properties
