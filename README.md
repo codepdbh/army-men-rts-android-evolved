@@ -2,7 +2,7 @@
   <img src="icono/icono.png" alt="Army Men RTS Android Evolved" width="180">
   <h1>Army Men RTS · Android Evolved</h1>
   <p>Port comunitario del juego de PC a Android ARM64, con Vulkan 1.1 como objetivo.</p>
-  <p><strong>El arranque recompilado ya alcanza la inicialización de DirectDraw. Todavía no hay gameplay.</strong></p>
+  <p><strong>El arranque recompilado ya enumera el adaptador e inicia DirectDraw sobre Vulkan 1.1. Todavía no hay gameplay.</strong></p>
   <img src="https://img.shields.io/badge/Android-ARM64-3DDC84" alt="Android ARM64">
   <img src="https://img.shields.io/badge/Vulkan-objetivo_1.1-B71C1C" alt="Vulkan 1.1 como objetivo">
   <img src="https://img.shields.io/badge/estado-en_desarrollo-D6A44B" alt="En desarrollo">
@@ -14,11 +14,12 @@
 | --- | --- |
 | Traducción estática del ejecutable x86 | 29.280 funciones; 98 unidades ARM64 compiladas y enlazadas |
 | Cargador PE32 y enlaces de importación | Probado con 4 secciones y 241 importaciones |
-| Arranque real del código recompilado | Crea la ventana, carga configuraciones y llega a `DirectDrawEnumerateExA` |
+| Arranque real del código recompilado | Crea la ventana, carga configuraciones y llega a `DirectDraw::CreateSurface` |
 | Memoria, heap, TLS y sincronización Win32 | Implementación inicial con pruebas en Android |
 | Archivos y mapeo de paquetes | Acceso a la copia del usuario; mapeo directo y copy-on-write comprobados |
 | Texto, idioma, reloj y versión del PE | CP1252/UTF-8, español y recursos del ejecutable |
-| DirectDraw/Direct3D 7 sobre Vulkan | En desarrollo |
+| Backend Vulkan 1.1 | Dispositivo real y prueba de framebuffer RGBA con lectura de píxeles comprobados en Adreno 610 |
+| Interfaces DirectDraw/Direct3D 7 | Enumeración, referencias COM y consultas iniciales de capacidades; creación de superficies pendiente |
 | Audio, vídeo, controles y gameplay | Pendiente |
 
 El APK local ejecuta el inicio del juego mediante el código ARM64 generado. La prueba termina de forma controlada al encontrar una función pendiente o al superar su límite de tiempo. **No es una versión jugable todavía**: falta el puente gráfico, además de completar los servicios que necesiten las siguientes etapas. El renderizador debe traducir DirectDraw/Direct3D 7; esa interfaz es distinta del puente Direct3D 9 de [NFSU2 Android Evolved](https://github.com/codepdbh/nfsu2-recompiled).

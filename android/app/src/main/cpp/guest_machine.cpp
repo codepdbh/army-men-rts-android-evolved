@@ -22,6 +22,8 @@
 #include "guest_heap.h"
 #include "pe_version.h"
 #include "guest_cpu.h"
+#include "vulkan_renderer.h"
+#include "dx7_guest.h"
 #include "guest_machine.h"
 extern "C" {
 #include "recomp_types.h"
@@ -33,7 +35,7 @@ constexpr uint32_t kStackSize = 0x00100000;
 constexpr uint32_t kTibBase = 0x00200000;
 constexpr uint32_t kImportBase = 0x70000000;
 const PeImageInfo* activeInfo = nullptr;
-std::vector<PeImageInfo::Import> activeImports;
+std::deque<PeImageInfo::Import> activeImports;
 PeImage* activeImage = nullptr;
 GuestMemory* memory = nullptr;
 std::string hostGameRoot;
@@ -53,6 +55,7 @@ void progressCheck() {
         throw std::runtime_error("Tiempo de arranque agotado en 0x" + addressText(g_cur_func));
 }
 void importBridge();
+recomp_func_t graphicsLookup(uint32_t va);
 }
 
 extern "C" {
@@ -84,6 +87,7 @@ recomp_func_t recomp_lookup(uint32_t va) {
 recomp_func_t recomp_lookup_manual(uint32_t) { return nullptr; }
 recomp_func_t recomp_lookup_import(uint32_t va) {
     progressCheck();
+    if(auto function=graphicsLookup(va))return function;
     if (!activeInfo || va < kImportBase || (va - kImportBase) % 16) return nullptr;
     uint32_t index = (va - kImportBase) / 16;
     if (index >= activeImports.size()) return nullptr;
@@ -202,7 +206,7 @@ std::string probeGuestBoot(PeImage& image, const PeImageInfo& info) {
     memory = &image.memory();
     hostGameRoot = std::filesystem::path(info.sourcePath).parent_path().string();
     activeInfo = &info;
-    activeImports = info.importTable;
+    activeImports.assign(info.importTable.begin(),info.importTable.end());
     g_mem_base = reinterpret_cast<ptrdiff_t>(image.base());
     g_eax = g_ecx = g_edx = g_ebx = g_esi = g_edi = g_ebp = 0;
     g_esp = kStackBase + kStackSize - 4;

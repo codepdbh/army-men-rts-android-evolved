@@ -16,6 +16,7 @@ void resetTimers();
 void resetVersions();
 void resetWindows();
 void resetMappings();
+void resetGraphics();
 bool queryMappedMemory(uint32_t,uint32_t&,uint32_t&,uint64_t&,uint32_t&);
 
 uint32_t kernelArg(uint32_t index) { return MEM32(g_esp + 4 + index * 4); }
@@ -41,6 +42,7 @@ void resetKernel() {
     resetVersions();
     resetWindows();
     resetMappings();
+    resetGraphics();
     if (activeInfo) {
         for (const auto& dll : activeInfo->importedLibraries) {
             std::string name = dll;
@@ -90,6 +92,7 @@ std::vector<uint16_t> wideString(uint32_t va) {
 #include "guest_format.inc"
 #include "guest_window_services.inc"
 #include "guest_mapping.inc"
+#include "guest_ddraw.inc"
 
 std::string moduleName(std::string name) {
     auto slash = name.find_last_of("/\\");
@@ -107,6 +110,7 @@ bool kernelDispatch(const std::string& name) {
     if (timerDispatch(name)) return true;
     if (versionDispatch(name)) return true;
     if (windowDispatch(name)) return true;
+    if (ddrawDispatch(name)) return true;
     auto arg = kernelArg;
     auto ret = kernelReturn;
     if (name == "InitializeCriticalSection" || name == "InitializeCriticalSectionAndSpinCount") {
@@ -278,6 +282,21 @@ bool kernelDispatch(const std::string& name) {
         uint64_t value = name == "QueryPerformanceFrequency" ? 1000000000ULL :
             uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
         std::memcpy(kernelPtr(arg(0), 8, true), &value, 8); ret(1, 1);
+    } else if (name == "RaiseException") {
+        uint32_t code=arg(0);
+        if(code==0x406d1388){ret(0,4);return true;}
+        std::string detail;
+        if(memory->readable(0x0072a528,1)){
+            for(uint32_t i=0;i<512&&memory->readable(0x0072a528+i,1);++i){
+                char c=MEM8(0x0072a528+i);if(!c)break;
+                if(static_cast<unsigned char>(c)<32&&c!='\n'&&c!='\t'){detail.clear();break;}detail+=c;
+            }
+        }
+        for(uint32_t i=0;i<std::min(g_icall_trace_idx,8u);++i){
+            uint32_t slot=(g_icall_trace_idx-1-i)&(ICALL_TRACE_SIZE-1);
+            __android_log_print(ANDROID_LOG_ERROR,"AMRTS","Exception trail: %08x from %08x",g_icall_trace[slot],g_icall_from[slot]);
+        }
+        throw GuestStop("Guest exception 0x"+hex(code)+" from 0x"+hex(g_cur_func)+(detail.empty()?std::string{}:": "+detail));
     } else if (name == "ExitProcess" || name == "TerminateProcess") {
         throw std::runtime_error("Guest requested " + name + " at 0x" + addressText(g_cur_func));
     } else if (name == "HeapValidate") {

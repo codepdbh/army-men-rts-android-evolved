@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <string>
 #include "pe_image.h"
+#include "vulkan_renderer.h"
 #ifdef AMRTS_LINK_GUEST
 #include "guest_machine.h"
 extern "C" {
@@ -77,14 +78,13 @@ Java_com_codepdbh_armymenrts_LauncherActivity_nativeProbe(JNIEnv* env, jclass, j
             report += std::string("PE32: ") + error.what() + "\n";
         }
     }
-    uint32_t version = VK_API_VERSION_1_0;
-    auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
-        vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
-    VkResult result = enumerate ? enumerate(&version) : VK_SUCCESS;
-    char gpu[128];
-    std::snprintf(gpu, sizeof(gpu), "Vulkan: %u.%u (mínimo 1.1)\n",
-                  VK_API_VERSION_MAJOR(version), VK_API_VERSION_MINOR(version));
-    report += result == VK_SUCCESS ? gpu : "Vulkan: consulta fallida\n";
+    try {
+        VulkanRenderer renderer;renderer.initialize(false);
+        const auto& info=renderer.gpu();char gpu[192];
+        std::snprintf(gpu,sizeof gpu,"GPU: %s / Vulkan %u.%u (minimo 1.1)\n",info.name.c_str(),
+                      VK_API_VERSION_MAJOR(info.apiVersion),VK_API_VERSION_MINOR(info.apiVersion));
+        report+=gpu;
+    }catch(const std::exception& error){report+=std::string("GPU: ")+error.what()+"\n";}
     report += "Recompilación ARM64 y puente DirectDraw/Direct3D 7 en desarrollo.";
     return env->NewStringUTF(report.c_str());
 }
