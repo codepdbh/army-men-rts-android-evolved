@@ -44,6 +44,9 @@ std::unordered_map<uint32_t, uint64_t> importCounts;
 std::chrono::steady_clock::time_point deadline;
 std::unique_ptr<GuestHeaps> heaps;
 std::mutex machineLock;
+ANativeWindow* presentationWindow=nullptr;
+std::shared_ptr<GuestRunControl> runControl;
+void pumpAndroidInput();
 
 std::string addressText(uint32_t va) {
     char buf[16];
@@ -51,11 +54,14 @@ std::string addressText(uint32_t va) {
     return buf;
 }
 void progressCheck() {
-    if (std::chrono::steady_clock::now() > deadline)
+    if(runControl&&runControl->stopped.load())throw std::runtime_error("Sesion detenida");
+    pumpAndroidInput();
+    if (!runControl&&std::chrono::steady_clock::now() > deadline)
         throw std::runtime_error("Tiempo de arranque agotado en 0x" + addressText(g_cur_func));
 }
 void importBridge();
 recomp_func_t graphicsLookup(uint32_t va);
+recomp_func_t inputLookup(uint32_t va);
 }
 
 extern "C" {
@@ -88,6 +94,7 @@ recomp_func_t recomp_lookup_manual(uint32_t) { return nullptr; }
 recomp_func_t recomp_lookup_import(uint32_t va) {
     progressCheck();
     if(auto function=graphicsLookup(va))return function;
+    if(auto function=inputLookup(va))return function;
     if (!activeInfo || va < kImportBase || (va - kImportBase) % 16) return nullptr;
     uint32_t index = (va - kImportBase) / 16;
     if (index >= activeImports.size()) return nullptr;
@@ -132,6 +139,7 @@ uint32_t callGuest(uint32_t va, const std::vector<uint32_t>& args) {
     } catch (...) { state.restore();throw; }
 }
 #include "guest_kernel_tests.inc"
+#include "guest_input_tests.inc"
 struct BootCleanup {
     ~BootCleanup() {
         recomp_yield_hook = nullptr;
@@ -142,6 +150,7 @@ struct BootCleanup {
         activeImage = nullptr;
         memory = nullptr;
         heaps.reset();
+        runControl.reset();presentationWindow=nullptr;
         g_mem_base = 0;
     }
 };
@@ -195,10 +204,13 @@ void importBridge() {
 }
 }
 
-std::string probeGuestBoot(PeImage& image, const PeImageInfo& info) {
-    std::lock_guard<std::mutex> lock(machineLock);
+std::string probeGuestBoot(PeImage& image, const PeImageInfo& info,ANativeWindow* window,std::shared_ptr<GuestRunControl> control) {
+    std::unique_lock<std::mutex> lock(machineLock,std::try_to_lock);
+    if(!lock.owns_lock())return "Ya hay una sesion activa";
     if (activeImage) return "Ya hay una maquina x86 activa";
     BootCleanup cleanup;
+    presentationWindow=window;
+    runControl=std::move(control);
     image.commit(kStackBase, kStackSize);
     image.commit(kTibBase, 0x2000);
     std::memcpy(image.address(kTibBase + 0x1000, 10), "AMRTS.EXE", 10);
@@ -234,6 +246,7 @@ std::string probeGuestBoot(PeImage& image, const PeImageInfo& info) {
     heaps = std::make_unique<GuestHeaps>(image.memory());
     resetKernel();
     testKernelServices();
+    testGuestInput();
     GuestCpuResult cpu = guestCpuQuery(0);
     if (cpu.b != 0x756e6547 || !(guestCpuQuery(1).d & (1u << 4))) throw GuestStop("Virtual x86 CPUID test failed");
     {
@@ -248,7 +261,7 @@ std::string probeGuestBoot(PeImage& image, const PeImageInfo& info) {
         before.restore();
         __android_log_print(ANDROID_LOG_INFO,"AMRTS","ARM64 callback and virtual CPUID tests passed");
     }
-    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     recomp_yield_hook = progressCheck;
     std::string result;
     try {

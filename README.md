@@ -14,7 +14,7 @@
 | --- | --- |
 | Traducción estática del ejecutable x86 | 29.280 funciones; 98 unidades ARM64 compiladas y enlazadas |
 | Cargador PE32 y enlaces de importación | Probado con 4 secciones y 241 importaciones |
-| Arranque real del código recompilado | Crea la ventana, carga configuraciones y llega a `DirectDraw::CreateSurface` |
+| Arranque real del código recompilado | Carga configuraciones, entrada, paquetes y `missions/shells/main`; ejecuta `DrawIndexedPrimitive` |
 | Memoria, heap, TLS y sincronización Win32 | Implementación inicial con pruebas en Android |
 | Archivos y mapeo de paquetes | Acceso a la copia del usuario; mapeo directo y copy-on-write comprobados |
 | Texto, idioma, reloj y versión del PE | CP1252/UTF-8, español y recursos del ejecutable |
@@ -22,7 +22,17 @@
 | Interfaces DirectDraw/Direct3D 7 | Enumeración, referencias COM y consultas iniciales de capacidades; creación de superficies pendiente |
 | Audio, vídeo, controles y gameplay | Pendiente |
 
-El APK local ejecuta el inicio del juego mediante el código ARM64 generado. La prueba termina de forma controlada al encontrar una función pendiente o al superar su límite de tiempo. **No es una versión jugable todavía**: falta el puente gráfico, además de completar los servicios que necesiten las siguientes etapas. El renderizador debe traducir DirectDraw/Direct3D 7; esa interfaz es distinta del puente Direct3D 9 de [NFSU2 Android Evolved](https://github.com/codepdbh/nfsu2-recompiled).
+El APK local ejecuta el inicio del juego mediante el c?digo ARM64 generado. La prueba ADB permanece limitada a 30 segundos. El bot?n **Iniciar (experimental)** usa una ruta continua, con presentaci?n horizontal Android y entrada t?ctil, probada en el S25 Ultra. Al salir de la pantalla o cambiar de aplicaci?n se detiene la sesi?n; volver inicia el juego desde cero, a?n sin reanudar una partida. **Es un prototipo con la primera misi?n ejecutada**, no una campa?a completa validada: siguen pendientes llamadas del motor, audio y v?deos. El renderizador traduce DirectDraw/Direct3D 7 sobre Vulkan 1.1, distinto del puente Direct3D 9 de [NFSU2 Android Evolved](https://github.com/codepdbh/nfsu2-recompiled).
+
+## Controles t?ctiles
+
+- Toca para seleccionar o dar la orden contextual del juego.
+- Arrastra un dedo para seleccionar un grupo.
+- Arrastra dos dedos para mover la c?mara; pellizca para hacer zoom.
+- Toca con dos dedos o mant?n uno para cancelar.
+- Usa el bot?n de men? superior para pausa, detener, cuartel general y pelotones. El HUD original permanece accesible.
+
+El [an?lisis de controles](docs/TOUCH_CONTROLS.md) explica la elecci?n de gestos, sus l?mites y las pruebas.
 
 ## Tu copia del juego
 
@@ -51,7 +61,7 @@ Para construir el arranque recompilado, genera primero los C locales y usa:
 
 ```powershell
 cd android
-./gradlew.bat assembleDebug -PamrtsLinkGuest
+./gradlew.bat assembleDebug -PamrtsLinkGuest -PamrtsOptimizeGuest
 ```
 
 ## Generar el código ARM64
@@ -73,9 +83,23 @@ El análisis incluye los constructores y terminadores del CRT definidos en `conf
 
 El script compila, instala y ejecuta la prueba en segundo plano mediante un receptor restringido a ADB. Comprueba memoria, heap, TLS, sincronización, conversión de texto, archivos, mapeos, recursos de versión y conservación del estado durante callbacks ARM64. El punto alcanzado queda en `work/device-boot-result.txt`. Con varios teléfonos, especifica `-Serial`.
 
+Tambi?n puedes comprobar la entrada y el renderizador en Windows con Visual Studio y un controlador Vulkan:
+
+```powershell
+./scripts/test_host.ps1
+```
+
+Estas pruebas comparan p?xeles reales de texturas, mezcla alfa, profundidad, borrado por regiones y cambios de viewport, adem?s de comprobar los gestos en JVM. No sustituyen la comprobaci?n del juego en Android.
+
+La prueba de gestos en dispositivo carga el entrenamiento e inyecta selecci?n, zoom, c?mara y cancelaci?n:
+
+```powershell
+./scripts/test_touch.ps1 -Serial R5GL70TXWMP
+```
+
 ## Siguiente trabajo
 
-1. Implementar DirectDraw y Direct3D 7 sobre Vulkan 1.1.
+1. Completar las operaciones DirectDraw/Direct3D 7 que falten y validar la presentaci?n en el S25.
 2. Completar hilos y las llamadas de Windows que aparezcan después del arranque gráfico.
 3. Adaptar audio, vídeos y controles táctiles para un RTS.
 4. Llegar al menú y al gameplay; medir rendimiento y corregir fallos reales.

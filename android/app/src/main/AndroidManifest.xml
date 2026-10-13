@@ -6,6 +6,8 @@
         android:roundIcon="@drawable/icono" android:allowBackup="false">
         <receiver android:name=".BootProbeReceiver" android:exported="true"
             android:permission="android.permission.DUMP" />
+        <activity android:name=".GameProbeActivity" android:exported="false" android:screenOrientation="landscape"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" />
         <activity android:name=".LauncherActivity" android:exported="true" android:screenOrientation="landscape"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
             <intent-filter>

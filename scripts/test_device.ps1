@@ -1,4 +1,4 @@
-param([string]$Serial, [switch]$SkipBuild)
+param([string]$Serial, [switch]$SkipBuild, [switch]$Unoptimized)
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sdkRoot = Join-Path $env:LOCALAPPDATA 'Android/Sdk'
@@ -22,7 +22,9 @@ try {
         $studioJdk = 'C:/Program Files/Android/Android Studio/jbr'
         if (Test-Path -LiteralPath "$studioJdk/bin/java.exe") { $env:JAVA_HOME = $studioJdk }
         $ErrorActionPreference = 'Continue'
-        & android/gradlew.bat -p android assembleDebug -PamrtsLinkGuest --console=plain
+        $buildArguments = @('-p', 'android', 'assembleDebug', '-PamrtsLinkGuest', '--console=plain')
+        if (!$Unoptimized) { $buildArguments += '-PamrtsOptimizeGuest' }
+        & android/gradlew.bat @buildArguments
         $ErrorActionPreference = 'Stop'
         if ($LASTEXITCODE -ne 0) { throw 'Android build failed' }
     }
@@ -30,7 +32,7 @@ try {
     $requestId = [guid]::NewGuid().ToString('N')
     Invoke-Adb -Arguments @('shell', 'am', 'broadcast', '-n', 'com.codepdbh.armymenrts/.BootProbeReceiver', '--es', 'request_id', $requestId) | Out-Null
     $bootResult = $null
-    for ($attempt = 0; $attempt -lt 20; ++$attempt) {
+    for ($attempt = 0; $attempt -lt 80; ++$attempt) {
         Start-Sleep -Milliseconds 500
         $log = Invoke-Adb -Arguments @('logcat', '-d', '-s', 'AMRTS:I')
         $bootResult = $log | Where-Object { $_.Contains("Probe result [$requestId]:") } | Select-Object -Last 1

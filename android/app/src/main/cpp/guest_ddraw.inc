@@ -4,7 +4,8 @@ void resetGraphicsObjects();
 void resetGraphics() { resetGraphicsObjects();graphics.reset();graphicsDescription=graphicsDriverName=0; }
 void initializeGraphics() {
     if(graphics)return;
-    auto renderer=std::make_unique<VulkanRenderer>();renderer->initialize();renderer->testClearReadback();
+    auto renderer=std::make_unique<VulkanRenderer>();renderer->initialize();renderer->testClearReadback();renderer->testTriangleReadback();
+    renderer->setWindow(presentationWindow);
     std::string description=renderer->gpu().name+" / Vulkan 1.1";
     graphicsDescription=allocate(uint32_t(description.size()+1));
     std::memcpy(kernelPtr(graphicsDescription,description.size()+1,true),description.c_str(),description.size()+1);

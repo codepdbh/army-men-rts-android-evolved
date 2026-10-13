@@ -1,11 +1,15 @@
 #include <jni.h>
 #include <android/log.h>
+#include <android/native_window_jni.h>
 #include <vulkan/vulkan.h>
 #include <cstdio>
 #include <sys/stat.h>
 #include <string>
 #include "pe_image.h"
 #include "vulkan_renderer.h"
+#include "guest_run_control.h"
+#include <map>
+#include <memory>
 #ifdef AMRTS_LINK_GUEST
 #include "guest_machine.h"
 extern "C" {
@@ -87,4 +91,45 @@ Java_com_codepdbh_armymenrts_LauncherActivity_nativeProbe(JNIEnv* env, jclass, j
     }catch(const std::exception& error){report+=std::string("GPU: ")+error.what()+"\n";}
     report += "Recompilación ARM64 y puente DirectDraw/Direct3D 7 en desarrollo.";
     return env->NewStringUTF(report.c_str());
+}
+
+namespace {
+std::mutex sessionMutex;
+std::map<uint64_t,std::shared_ptr<GuestRunControl>> sessions;
+uint64_t nextSession=1;
+std::shared_ptr<GuestRunControl> session(uint64_t id){std::lock_guard<std::mutex> lock(sessionMutex);auto found=sessions.find(id);return found==sessions.end()?nullptr:found->second;}
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeCreateSession(JNIEnv*,jclass){
+    std::lock_guard<std::mutex> lock(sessionMutex);uint64_t id=nextSession++;sessions.emplace(id,std::make_shared<GuestRunControl>());return jlong(id);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeCloseSession(JNIEnv*,jclass,jlong id){
+    std::lock_guard<std::mutex> lock(sessionMutex);auto found=sessions.find(uint64_t(id));if(found!=sessions.end()){found->second->stopped.store(true);sessions.erase(found);}
+}
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativePointer(JNIEnv*,jclass,jlong id,jfloat x,jfloat y,jint button,jboolean down){
+    auto control=session(uint64_t(id));if(control)control->pointer(x,y,uint32_t(button),bool(down));
+}
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeKey(JNIEnv*,jclass,jlong id,jint scan,jboolean down){
+    auto control=session(uint64_t(id));if(control)control->key(uint32_t(scan),bool(down));
+}
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeWheel(JNIEnv*,jclass,jlong id,jint steps){auto control=session(uint64_t(id));if(control)control->wheel(steps);}
+extern "C" JNIEXPORT jint JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeFrames(JNIEnv*,jclass,jlong id){auto control=session(uint64_t(id));return control?jint(control->frames.load()):0;}
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeVisualProbe(JNIEnv* env,jclass,jstring dataPath,jobject surface,jlong id){
+#ifdef AMRTS_LINK_GUEST
+    auto control=session(uint64_t(id));if(!control)return env->NewStringUTF("Sesion detenida");
+    const char* chars=env->GetStringUTFChars(dataPath,nullptr);std::string root(chars);env->ReleaseStringUTFChars(dataPath,chars);
+    ANativeWindow* window=ANativeWindow_fromSurface(env,surface);if(!window)return env->NewStringUTF("Android surface unavailable");
+    std::string result;
+    try{PeImage image;PeImageInfo info=image.load(root+"/AMRTS.EXE");result=probeGuestBoot(image,info,window,control);}
+    catch(const std::exception& error){result=error.what();}
+    ANativeWindow_release(window);__android_log_print(ANDROID_LOG_INFO,"AMRTS","Visual run: %s",result.c_str());return env->NewStringUTF(result.c_str());
+#else
+    return env->NewStringUTF("Compile with -PamrtsLinkGuest");
+#endif
 }

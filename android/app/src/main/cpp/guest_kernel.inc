@@ -17,6 +17,8 @@ void resetVersions();
 void resetWindows();
 void resetMappings();
 void resetGraphics();
+void resetInput();
+void resetRegistry();
 bool queryMappedMemory(uint32_t,uint32_t&,uint32_t&,uint64_t&,uint32_t&);
 
 uint32_t kernelArg(uint32_t index) { return MEM32(g_esp + 4 + index * 4); }
@@ -43,6 +45,8 @@ void resetKernel() {
     resetWindows();
     resetMappings();
     resetGraphics();
+    resetInput();
+    resetRegistry();
     if (activeInfo) {
         for (const auto& dll : activeInfo->importedLibraries) {
             std::string name = dll;
@@ -50,6 +54,7 @@ void resetKernel() {
             if (!modules.count(name)) modules[name] = 0x71000000u + uint32_t(modules.size()) * 0x10000;
         }
         modules.emplace("ddraw.dll", 0x71000000u + uint32_t(modules.size()) * 0x10000);
+        modules.emplace("dinput.dll", 0x71000000u + uint32_t(modules.size()) * 0x10000);
     }
 }
 
@@ -93,6 +98,8 @@ std::vector<uint16_t> wideString(uint32_t va) {
 #include "guest_window_services.inc"
 #include "guest_mapping.inc"
 #include "guest_ddraw.inc"
+#include "guest_dinput.inc"
+#include "guest_registry.inc"
 
 std::string moduleName(std::string name) {
     auto slash = name.find_last_of("/\\");
@@ -111,6 +118,24 @@ bool kernelDispatch(const std::string& name) {
     if (versionDispatch(name)) return true;
     if (windowDispatch(name)) return true;
     if (ddrawDispatch(name)) return true;
+    if (inputDispatch(name)) return true;
+    if (registryDispatch(name)) return true;
+    // Report a missing audio device through Miles' normal failure path.
+    // No sample handle is returned until Android audio output exists.
+    if(name=="_AIL_set_redist_directory@4"){ret(0,1);return true;}
+    if(name=="_AIL_startup@0"||name=="_AIL_shutdown@0"){ret(0,0);return true;}
+    if(name=="_AIL_open_digital_driver@16"){ret(0,4);return true;}
+    if(name=="_AIL_last_error@0"){
+        const char message[]="Android audio output is not implemented yet";uint32_t output=allocate(sizeof message);
+        std::memcpy(kernelPtr(output,sizeof message,true),message,sizeof message);ret(output,0);return true;
+    }
+    if(name=="_AIL_ms_count@0"){ret(uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()),0);return true;}
+    // The game handles unavailable movie decoding by skipping the intro.
+    if(name=="_BinkOpen@8"){ret(0,2);return true;}
+    if(name=="_BinkGetError@0"){
+        const char message[]="Bink decoding is not implemented on Android yet";uint32_t output=allocate(sizeof message);
+        std::memcpy(kernelPtr(output,sizeof message,true),message,sizeof message);ret(output,0);return true;
+    }
     auto arg = kernelArg;
     auto ret = kernelReturn;
     if (name == "InitializeCriticalSection" || name == "InitializeCriticalSectionAndSpinCount") {
@@ -231,6 +256,7 @@ bool kernelDispatch(const std::string& name) {
             (symbol == "InitializeCriticalSectionAndSpinCount" || symbol == "TryEnterCriticalSection");
         extra |= module->first == "ddraw.dll" &&
             (symbol == "DirectDrawCreate" || symbol == "DirectDrawCreateEx" || symbol == "DirectDrawEnumerateExA" || symbol == "DirectDrawEnumerateA");
+        extra |= module->first == "dinput.dll" && symbol == "DirectInputCreateEx";
         if (!extra) { kernelError(127); ret(0, 2); }
         else {
             uint32_t target = kImportBase + uint32_t(activeImports.size()) * 16;

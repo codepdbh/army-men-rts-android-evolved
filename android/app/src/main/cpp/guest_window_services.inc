@@ -59,6 +59,24 @@ const std::map<std::string,recomp_func_t> windowFunctions={
     {"BeginPaint",beginPaint},{"EndPaint",endPaint},{"wsprintfA",winSprintfA},{"wvsprintfA",winFormatA}
 };
 bool windowDispatch(const std::string& name) {
+    if(name=="SystemParametersInfoA"){
+        uint32_t action=arg(0),out=arg(2);
+        if(action==0x16){write32(out,1);ret(1,4);return true;}
+        if(action==0xa){write32(out,31);ret(1,4);return true;}
+        if(action==3){write32(out,6);write32(out+4,10);write32(out+8,1);ret(1,4);return true;}
+        if(action==48){int32_t rectangle[]={0,0,displayWidth,displayHeight};std::memcpy(kernelPtr(out,16,true),rectangle,16);ret(1,4);return true;}
+        throw GuestStop("SystemParametersInfo action pending: "+std::to_string(action));
+    }
+    if(name=="RedrawWindow"){
+        uint32_t handle=arg(0),flags=arg(3);
+        if(!windows.count(handle)){lastError=1400;ret(0,4);return true;}
+        if(arg(2))throw GuestStop("RedrawWindow region support pending");
+        if(flags&1){
+            if(flags&0x100){if(flags&4)windowMessage(handle,0x14,0,0);windowMessage(handle,0xf,0,0);}
+            else {std::lock_guard<std::mutex> lock(messageMutex);windowMessages.push_back({handle,0xf,0,0,messageTime()});}
+        }
+        ret(1,4);return true;
+    }
     auto found=windowFunctions.find(name);if(found!=windowFunctions.end()){found->second();return true;}
     if(name=="GetStockObject") {ret(arg(0)<20?0x74000000+arg(0):0,1);return true;}
     if(name=="DeleteObject") {lastError=6;ret(0,1);return true;}
@@ -76,9 +94,6 @@ bool windowDispatch(const std::string& name) {
         auto window=windows.find(arg(0));if(window==windows.end()){lastError=1400;ret(0,2);return true;}
         uint32_t point=arg(1);kernelPtr(point,8,true);int32_t sign=name=="ScreenToClient"?-1:1;
         MEM32(point)+=sign*window->second.x;MEM32(point+4)+=sign*window->second.y;ret(1,2);return true;
-    }
-    if(name=="SystemParametersInfoA"&&arg(0)==48) {
-        int32_t rectangle[]={0,0,displayWidth,displayHeight};std::memcpy(kernelPtr(arg(2),16,true),rectangle,16);ret(1,4);return true;
     }
     return false;
 }

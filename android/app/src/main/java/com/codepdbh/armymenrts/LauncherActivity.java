@@ -49,7 +49,7 @@ public final class LauncherActivity extends Activity {
                         Uri.parse("package:"+getPackageName())));
             else requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE},1);
         });layout.addView(access);
-        Button boot=new Button(this);boot.setText("Probar arranque x86");
+        Button boot=new Button(this);boot.setText("Diagnostico de inicio");
         boot.setOnClickListener(view->{
             boot.setEnabled(false);
             new Thread(()->{
@@ -60,10 +60,13 @@ public final class LauncherActivity extends Activity {
                 });
             },"amrts-boot-probe").start();
         });layout.addView(boot);
+        Button visual=new Button(this);visual.setText("Iniciar (experimental)");
+        visual.setOnClickListener(view->startActivity(new Intent(this,GameProbeActivity.class)));layout.addView(visual);
         ScrollView scroll=new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.addView(layout);
         setContentView(scroll);
+        if(getIntent().getBooleanExtra("visual_probe",false))startActivity(new Intent(this,GameProbeActivity.class));
     }
     @Override protected void onResume(){super.onResume();
         boolean allowed=Build.VERSION.SDK_INT>=30?Environment.isExternalStorageManager():
