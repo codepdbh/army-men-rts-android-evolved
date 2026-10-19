@@ -41,8 +41,12 @@ public final class TouchInstrumentation extends Instrumentation {
             activity=(GameProbeActivity)startActivitySync(new Intent(getTargetContext(),GameProbeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             waitFrames(15,15000);tap(.075f,.91f);waitFrames(10,10000);tap(.78f,.8f);waitFrames(20,20000);
             sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);waitFrames(20,15000);
-            // One finger selection drag.
-            event(MotionEvent.ACTION_DOWN,.38f,.32f);event(MotionEvent.ACTION_MOVE,.5f,.45f);event(MotionEvent.ACTION_UP,.6f,.6f);waitFrames(5,5000);
+            // Hold then drag: selection rectangle.
+            event(MotionEvent.ACTION_DOWN,.38f,.32f);SystemClock.sleep(RtsTouchController.HOLD_MS+150);event(MotionEvent.ACTION_MOVE,.5f,.45f);event(MotionEvent.ACTION_UP,.6f,.6f);waitFrames(5,5000);
+            // One finger camera pan.
+            event(MotionEvent.ACTION_DOWN,.6f,.5f);event(MotionEvent.ACTION_MOVE,.5f,.5f);SystemClock.sleep(100);event(MotionEvent.ACTION_MOVE,.4f,.45f);event(MotionEvent.ACTION_UP,.4f,.45f);waitFrames(5,5000);
+            // Tap at the border (minimap corner): the cursor must not keep edge-scrolling.
+            tap(.995f,.995f);waitFrames(5,5000);
             // Pinch: no mouse button is pressed, only DirectInput wheel input.
             event(MotionEvent.ACTION_DOWN,.4f,.4f);event(MotionEvent.ACTION_POINTER_DOWN|(1<<8),.4f,.4f,.6f,.4f);
             event(MotionEvent.ACTION_MOVE,.33f,.4f,.67f,.4f);SystemClock.sleep(100);
@@ -52,8 +56,12 @@ public final class TouchInstrumentation extends Instrumentation {
             event(MotionEvent.ACTION_MOVE,.45f,.45f,.65f,.45f);SystemClock.sleep(100);
             event(MotionEvent.ACTION_MOVE,.5f,.5f,.7f,.5f);event(MotionEvent.ACTION_POINTER_UP|(1<<8),.5f,.5f,.7f,.5f);event(MotionEvent.ACTION_UP,.5f,.5f);waitFrames(10,10000);
             // Lifecycle cancellation path while a selection button is held.
-            event(MotionEvent.ACTION_DOWN,.3f,.3f);event(MotionEvent.ACTION_MOVE,.45f,.45f);event(MotionEvent.ACTION_CANCEL,.45f,.45f);waitFrames(5,5000);
-            result.putString("stream","RTS device gestures passed: menu, mission, selection, pinch, camera, cancellation; frames="+frames());finish(0,result);
+            event(MotionEvent.ACTION_DOWN,.3f,.3f);SystemClock.sleep(RtsTouchController.HOLD_MS+150);event(MotionEvent.ACTION_MOVE,.45f,.45f);event(MotionEvent.ACTION_CANCEL,.45f,.45f);waitFrames(5,5000);
+            int firstFrame=frames();long sampleStart=SystemClock.uptimeMillis();
+            while(SystemClock.uptimeMillis()-sampleStart<10000){SystemClock.sleep(100);final boolean[] stopped={false};runOnMainSync(()->stopped[0]=activity.runFinished());if(stopped[0])throw new AssertionError("Guest stopped during FPS sample");}
+            if(frames()==firstFrame)throw new AssertionError("No frames during FPS sample");
+            float fps=(frames()-firstFrame)*1000f/(SystemClock.uptimeMillis()-sampleStart);
+            result.putString("stream","RTS device gestures passed: menu, mission, selection, one-finger pan, edge tap, pinch, camera, cancellation; frames="+frames()+"; gameplay sample FPS="+fps);finish(0,result);
         }catch(Throwable error){result.putString("stream",error.toString());finish(1,result);}
     }
 }

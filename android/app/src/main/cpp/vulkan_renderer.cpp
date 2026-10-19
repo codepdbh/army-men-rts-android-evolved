@@ -27,7 +27,9 @@ struct TestResources {
     VkCommandBuffer command=VK_NULL_HANDLE;
     void* mapped=nullptr;
     ~TestResources() {
-        vkDeviceWaitIdle(device);
+        // Every successful submission waits for this fence before returning.
+        // Keep the global wait only for exceptional cleanup of unfinished work.
+        if(!fence||vkGetFenceStatus(device,fence)!=VK_SUCCESS)vkDeviceWaitIdle(device);
         if(mapped)vkUnmapMemory(device,bufferMemory);
         if(fence)vkDestroyFence(device,fence,nullptr);
         if(command)vkFreeCommandBuffers(device,pool,1,&command);
@@ -41,6 +43,7 @@ struct TestResources {
 
 VulkanRenderer::~VulkanRenderer() {
     if(device_)vkDeviceWaitIdle(device_);
+    pendingDraws_.clear();
     pipelines_.clear();whiteTexture_.reset();
     if(pipelineCache_)vkDestroyPipelineCache(device_,pipelineCache_,nullptr);
     if(device_){vkDeviceWaitIdle(device_);if(swapchain_)vkDestroySwapchainKHR(device_,swapchain_,nullptr);if(pool_)vkDestroyCommandPool(device_,pool_,nullptr);vkDestroyDevice(device_,nullptr);}
@@ -138,6 +141,7 @@ bool VulkanRenderer::supportsOptimalFormat(VkFormat format,VkFormatFeatureFlags 
 }
 
 void VulkanRenderer::uploadSurface(VulkanSurface& surface,const void* rgba){
+    flushDraws();
     if(surface.depth)throw std::runtime_error("Depth surface CPU upload unsupported");
     TestResources resources{device_,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,pool_};
     uint64_t bytes=uint64_t(surface.width)*surface.height*4;
@@ -266,6 +270,7 @@ void VulkanRenderer::setWindow(ANativeWindow* window){
 #endif
 }
 void VulkanRenderer::present(VulkanSurface& surface){
+    flushDraws();
     if(!swapchain_)return;
     if(surface.depth||surface.layout==VK_IMAGE_LAYOUT_UNDEFINED)throw std::runtime_error("Invalid display source");
     TestResources resources{device_,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,pool_};
@@ -285,7 +290,8 @@ void VulkanRenderer::present(VulkanSurface& surface){
     vkCmdPipelineBarrier(resources.command,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,2,barriers);
     VkImageBlit blit{};blit.srcSubresource=blit.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
     blit.srcOffsets[1]={int32_t(surface.width),int32_t(surface.height),1};blit.dstOffsets[1]={int32_t(displayExtent_.width),int32_t(displayExtent_.height),1};
-    vkCmdBlitImage(resources.command,surface.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,displayImages_[imageIndex],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,VK_FILTER_NEAREST);
+    const VkFilter displayFilter=supportsOptimalFormat(surface.format,VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)?VK_FILTER_LINEAR:VK_FILTER_NEAREST;
+    vkCmdBlitImage(resources.command,surface.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,displayImages_[imageIndex],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,displayFilter);
     barriers[0].oldLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;barriers[0].newLayout=surface.layout;barriers[0].srcAccessMask=VK_ACCESS_TRANSFER_READ_BIT;barriers[0].dstAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
     barriers[1].oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;barriers[1].newLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;barriers[1].srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barriers[1].dstAccessMask=0;
     vkCmdPipelineBarrier(resources.command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,0,0,nullptr,0,nullptr,2,barriers);
@@ -298,6 +304,7 @@ void VulkanRenderer::present(VulkanSurface& surface){
 }
 
 void VulkanRenderer::clearSurface(VulkanSurface& surface,uint32_t argb,float depth){
+    flushDraws();
     TestResources resources{device_,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,pool_};
     VkCommandBufferAllocateInfo commands{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};commands.commandPool=pool_;commands.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;commands.commandBufferCount=1;
     check(vkAllocateCommandBuffers(device_,&commands,&resources.command),"Clear commands");
@@ -339,6 +346,25 @@ struct VulkanPipeline {
 };
 namespace {
 struct DrawFramebuffer {VkDevice device;VkFramebuffer handle=VK_NULL_HANDLE;~DrawFramebuffer(){if(handle)vkDestroyFramebuffer(device,handle,nullptr);}};
+}
+struct VulkanDrawBatch {
+    TestResources upload;
+    DrawFramebuffer frame;
+    std::shared_ptr<VulkanPipeline> pipeline;
+    VkDescriptorSet descriptor=VK_NULL_HANDLE;
+    VulkanDrawBatch(VkDevice device,VkCommandPool pool):upload{device,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,pool},frame{device}{}
+    ~VulkanDrawBatch(){
+        if(upload.fence&&vkGetFenceStatus(upload.device,upload.fence)!=VK_SUCCESS)vkDeviceWaitIdle(upload.device);
+        if(descriptor)vkFreeDescriptorSets(upload.device,pipeline->descriptors,1,&descriptor);
+    }
+};
+void VulkanRenderer::flushDraws(){
+    if(pendingDraws_.empty())return;
+    VkFence fence=pendingDraws_.back()->upload.fence;
+    check(vkWaitForFences(device_,1,&fence,VK_TRUE,2000000000ULL),"Draw batch wait");
+    pendingDraws_.clear();
+}
+namespace {
 VkBlendFactor blendFactor(uint32_t factor){
     static const VkBlendFactor table[]={VK_BLEND_FACTOR_ZERO,VK_BLEND_FACTOR_ZERO,VK_BLEND_FACTOR_ONE,VK_BLEND_FACTOR_SRC_COLOR,VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,VK_BLEND_FACTOR_SRC_ALPHA,VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,VK_BLEND_FACTOR_DST_ALPHA,VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,VK_BLEND_FACTOR_DST_COLOR,VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,VK_BLEND_FACTOR_SRC_ALPHA_SATURATE};
     if(factor>=12)throw std::runtime_error("Unsupported D3D blend factor");return table[factor];
@@ -356,7 +382,9 @@ void VulkanRenderer::draw(VulkanSurface& target,VulkanSurface* depth,VulkanSurfa
     auto found=pipelines_.find(key);bool create=found==pipelines_.end();
     auto cached=create?std::make_shared<VulkanPipeline>():found->second;if(create)cached->device=device_;
     auto& resources=*cached;
-    TestResources upload{device_,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,pool_};
+    if(pendingDraws_.size()>=128)flushDraws();
+    auto batch=std::make_shared<VulkanDrawBatch>(device_,pool_);batch->pipeline=cached;
+    auto& upload=batch->upload;
     if(create){
     VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};shader.codeSize=sizeof fixed_vert;shader.pCode=fixed_vert;
     check(vkCreateShaderModule(device_,&shader,nullptr,&resources.vertex),"Vertex shader");shader.codeSize=sizeof fixed_frag;shader.pCode=fixed_frag;
@@ -382,7 +410,7 @@ void VulkanRenderer::draw(VulkanSurface& target,VulkanSurface* depth,VulkanSurfa
     check(vkCreatePipelineLayout(device_,&layout,nullptr,&resources.layout),"D3D pipeline layout");
     VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};sampler.magFilter=sampler.minFilter=VK_FILTER_LINEAR;sampler.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;sampler.addressModeU=sampler.addressModeV=sampler.addressModeW=VK_SAMPLER_ADDRESS_MODE_REPEAT;sampler.maxLod=0;
     check(vkCreateSampler(device_,&sampler,nullptr,&resources.sampler),"Texture sampler");
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,2};VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pool.maxSets=1;pool.poolSizeCount=1;pool.pPoolSizes=&poolSize;
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,258};VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pool.flags=VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;pool.maxSets=129;pool.poolSizeCount=1;pool.pPoolSizes=&poolSize;
     check(vkCreateDescriptorPool(device_,&pool,nullptr,&resources.descriptors),"Texture descriptor pool");
     VkDescriptorSetAllocateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};setInfo.descriptorPool=resources.descriptors;setInfo.descriptorSetCount=1;setInfo.pSetLayouts=&resources.descriptorLayout;
     check(vkAllocateDescriptorSets(device_,&setInfo,&resources.set),"Texture descriptor set");
@@ -406,14 +434,16 @@ void VulkanRenderer::draw(VulkanSurface& target,VulkanSurface* depth,VulkanSurfa
     VkGraphicsPipelineCreateInfo pipeline{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};pipeline.stageCount=2;pipeline.pStages=stages;pipeline.pVertexInputState=&input;pipeline.pInputAssemblyState=&assembly;pipeline.pViewportState=&viewportInfo;pipeline.pRasterizationState=&raster;pipeline.pMultisampleState=&multisample;pipeline.pDepthStencilState=&depthState;pipeline.pColorBlendState=&blendState;pipeline.layout=resources.layout;pipeline.renderPass=resources.pass;pipeline.pDynamicState=&dynamic;
     check(vkCreateGraphicsPipelines(device_,pipelineCache_,1,&pipeline,nullptr,&resources.pipeline),"D3D draw pipeline");
     // Bound the cache without invalidating a pipeline used by this call.
-    if(pipelines_.size()>=128)pipelines_.clear();pipelines_.emplace(key,cached);
+    if(pipelines_.size()>=128){flushDraws();pipelines_.clear();}pipelines_.emplace(key,cached);
     }
-    DrawFramebuffer frame{device_};
+    auto& frame=batch->frame;
+    VkDescriptorSetAllocateInfo drawSet{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};drawSet.descriptorPool=resources.descriptors;drawSet.descriptorSetCount=1;drawSet.pSetLayouts=&resources.descriptorLayout;
+    check(vkAllocateDescriptorSets(device_,&drawSet,&batch->descriptor),"Draw texture snapshot");
     VkImageView views[]={target.view,depth?depth->view:VK_NULL_HANDLE};
     VkFramebufferCreateInfo framebuffer{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};framebuffer.renderPass=resources.pass;framebuffer.attachmentCount=depth?2:1;framebuffer.pAttachments=views;framebuffer.width=target.width;framebuffer.height=target.height;framebuffer.layers=1;
     check(vkCreateFramebuffer(device_,&framebuffer,nullptr,&frame.handle),"D3D framebuffer");
     VkDescriptorImageInfo images[]={{resources.sampler,texture0->view,VK_IMAGE_LAYOUT_GENERAL},{resources.sampler,texture1->view,VK_IMAGE_LAYOUT_GENERAL}};
-    VkWriteDescriptorSet writes[2]{};for(uint32_t i=0;i<2;++i){writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;writes[i].dstSet=resources.set;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;writes[i].pImageInfo=&images[i];}vkUpdateDescriptorSets(device_,2,writes,0,nullptr);
+    VkWriteDescriptorSet writes[2]{};for(uint32_t i=0;i<2;++i){writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;writes[i].dstSet=batch->descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;writes[i].pImageInfo=&images[i];}vkUpdateDescriptorSets(device_,2,writes,0,nullptr);
     VkViewport viewport{state.viewport[0],state.viewport[1],state.viewport[2],state.viewport[3],state.viewport[4],state.viewport[5]};
     VkRect2D scissor{{0,0},{target.width,target.height}};
     uint64_t vertexBytes=vertices.size()*sizeof(VulkanVertex),indexOffset=(vertexBytes+3)&~uint64_t(3),total=indexOffset+indices.size()*2;
@@ -426,15 +456,19 @@ void VulkanRenderer::draw(VulkanSurface& target,VulkanSurface* depth,VulkanSurfa
     VkCommandBufferAllocateInfo commands{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};commands.commandPool=pool_;commands.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;commands.commandBufferCount=1;check(vkAllocateCommandBuffers(device_,&commands,&upload.command),"Draw command");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;check(vkBeginCommandBuffer(upload.command,&begin),"Draw begin");
     VkRenderPassBeginInfo render{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};render.renderPass=resources.pass;render.framebuffer=frame.handle;render.renderArea=scissor;vkCmdBeginRenderPass(upload.command,&render,VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(upload.command,VK_PIPELINE_BIND_POINT_GRAPHICS,resources.pipeline);vkCmdBindDescriptorSets(upload.command,VK_PIPELINE_BIND_POINT_GRAPHICS,resources.layout,0,1,&resources.set,0,nullptr);
+    vkCmdBindPipeline(upload.command,VK_PIPELINE_BIND_POINT_GRAPHICS,resources.pipeline);vkCmdBindDescriptorSets(upload.command,VK_PIPELINE_BIND_POINT_GRAPHICS,resources.layout,0,1,&batch->descriptor,0,nullptr);
     uint8_t constants[64];std::memcpy(constants,state.stages,32);std::memcpy(constants+32,state.alpha,16);std::memcpy(constants+48,state.factor,16);vkCmdPushConstants(upload.command,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,64,constants);
     vkCmdSetViewport(upload.command,0,1,&viewport);vkCmdSetScissor(upload.command,0,1,&scissor);
     VkDeviceSize offset=0;vkCmdBindVertexBuffers(upload.command,0,1,&upload.buffer,&offset);vkCmdBindIndexBuffer(upload.command,upload.buffer,indexOffset,VK_INDEX_TYPE_UINT16);vkCmdDrawIndexed(upload.command,uint32_t(indices.size()),1,0,0,0);vkCmdEndRenderPass(upload.command);
     check(vkEndCommandBuffer(upload.command),"Draw end");VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};check(vkCreateFence(device_,&fence,nullptr,&upload.fence),"Draw fence");
-    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&upload.command;check(vkQueueSubmit(queue_,1,&submit,upload.fence),"Draw submit");check(vkWaitForFences(device_,1,&upload.fence,VK_TRUE,2000000000ULL),"Draw wait");
+    // Retain command buffers, vertices and descriptor snapshots until the batch
+    // completes. Do not stall the CPU for each individual primitive group.
+    pendingDraws_.push_back(batch);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&upload.command;check(vkQueueSubmit(queue_,1,&submit,upload.fence),"Draw submit");
 }
 
 std::vector<uint8_t> VulkanRenderer::readSurface(VulkanSurface& surface){
+    flushDraws();
     if(surface.depth)throw std::runtime_error("Depth readback unsupported");
     TestResources resources{device_,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,pool_};
     uint64_t bytes=uint64_t(surface.width)*surface.height*4;
@@ -484,6 +518,7 @@ void VulkanRenderer::testTriangleReadback(){
 }
 
 void VulkanRenderer::clearRegions(VulkanSurface& target,VulkanSurface* depth,uint32_t flags,uint32_t argb,float value,const std::vector<VkRect2D>& regions){
+    flushDraws();
     if(regions.empty())return;
     if(target.layout==VK_IMAGE_LAYOUT_UNDEFINED)clearSurface(target,0,1);
     if(depth&&depth->layout==VK_IMAGE_LAYOUT_UNDEFINED)clearSurface(*depth,0,1);

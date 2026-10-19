@@ -116,6 +116,12 @@ Java_com_codepdbh_armymenrts_GameProbeActivity_nativeKey(JNIEnv*,jclass,jlong id
     auto control=session(uint64_t(id));if(control)control->key(uint32_t(scan),bool(down));
 }
 extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeMotion(JNIEnv*,jclass,jlong id,jfloat dx,jfloat dy){auto control=session(uint64_t(id));if(control)control->motion(dx,dy);}
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeCameraDrag(JNIEnv*,jclass,jlong id,jint phase,jfloat x,jfloat y,jfloat zoom,jfloat vx,jfloat vy){auto control=session(uint64_t(id));if(control)control->dragCamera(phase,x,y,zoom,vx,vy);}
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeVolume(JNIEnv*,jclass,jlong id,jint volume){auto control=session(uint64_t(id));if(control)control->masterVolume.store(volume<0?-1:std::min(int(volume),127));}
+extern "C" JNIEXPORT void JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeWheel(JNIEnv*,jclass,jlong id,jint steps){auto control=session(uint64_t(id));if(control)control->wheel(steps);}
 extern "C" JNIEXPORT jint JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeFrames(JNIEnv*,jclass,jlong id){auto control=session(uint64_t(id));return control?jint(control->frames.load()):0;}

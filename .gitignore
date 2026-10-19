@@ -16,3 +16,4 @@ android/app/.cxx/
 android/local.properties
 android/gradle-wrapper.jar
 android/gradle-wrapper.properties
+__pycache__/

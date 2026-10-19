@@ -4,13 +4,14 @@ constexpr DxGuid inputDeviceIid{0x57d7c6bc,0x2356,0x11d3,{0x8e,0x9d,0,0xc0,0x4f,
 constexpr DxGuid mouseGuid{0x6f1d2b60,0xd5a0,0x11cf,{0xbf,0xc7,0x44,0x45,0x53,0x54,0,0}};
 constexpr DxGuid keyboardGuid{0x6f1d2b61,0xd5a0,0x11cf,{0xbf,0xc7,0x44,0x45,0x53,0x54,0,0}};
 struct InputFormatEntry {uint32_t offset,type;};
-struct InputDataEvent {uint32_t offset,data,time,sequence;};
+struct InputDataEvent {uint32_t offset,data,time,sequence;bool axis=false;};
 struct InputObject {uint32_t type=0,references=1,dataBytes=0,bufferSize=0,cooperative=0;bool acquired=false,overflow=false;int32_t deltaX=0,deltaY=0,deltaZ=0;std::vector<InputFormatEntry> format;std::deque<InputDataEvent> events;};
 std::map<uint32_t,InputObject> inputObjects;
 uint32_t inputTables[2]{},inputToken=0,inputSequence=0;
+double motionRemainder[2]{};
 std::array<uint8_t,256> inputKeyboard{};std::array<uint8_t,3> inputButtons{};
 void inputMethod();
-void resetInput(){inputObjects.clear();inputTables[0]=inputTables[1]=inputToken=inputSequence=0;inputKeyboard.fill(0);inputButtons.fill(0);}
+void resetInput(){inputObjects.clear();motionRemainder[0]=motionRemainder[1]=0;inputTables[0]=inputTables[1]=inputToken=inputSequence=0;inputKeyboard.fill(0);inputButtons.fill(0);}
 uint32_t createInputObject(uint32_t type){
     uint32_t tableIndex=type?1:0,count=type?29:10;
     if(!inputTables[tableIndex]){inputTables[tableIndex]=allocate(count*4);for(uint32_t i=0;i<count;++i)write32(inputTables[tableIndex]+i*4,0x76000000+tableIndex*0x10000+i*16);}
@@ -30,16 +31,53 @@ void inputDescription(uint32_t output,uint32_t type){
     std::memcpy(kernelPtr(output+40,std::strlen(name)+1,true),name,std::strlen(name)+1);
     std::memcpy(kernelPtr(output+300,std::strlen(name)+1,true),name,std::strlen(name)+1);
 }
+bool mouseMotionPending(){
+    for(const auto& item:inputObjects){const auto& object=item.second;if(!object.acquired||object.type!=2)continue;
+        if(!object.bufferSize&&(object.deltaX||object.deltaY))return true;
+        for(const auto& event:object.events)if(event.axis)return true;}
+    return false;
+}
+// The engine moves its cursor by (counts*gain)>>16 (16.16 gain, arithmetic
+// shift). Pick the count whose integrated result lands closest to `pixels`.
+int32_t engineCounts(int32_t pixels,uint32_t gain){
+    if(!pixels||!gain)return 0;
+    int64_t base=int64_t(std::floor(double(pixels)*65536/gain)),best=base;int64_t bestError=INT64_MAX;
+    for(int64_t counts=base-1;counts<=base+2;++counts){
+        int64_t error=std::llabs(((counts*int64_t(gain))>>16)-pixels);
+        if(error<bestError){bestError=error;best=counts;}
+    }
+    return int32_t(best);
+}
 void pumpAndroidInput(){
     if(!runControl)return;std::deque<AndroidGuestInput> pending;
     {std::lock_guard<std::mutex> lock(runControl->mutex);pending.swap(runControl->pending);}
+    // Fullscreen Army Men integrates relative mouse counts with width/640 and
+    // height/480 gains, and recenters its cursor when a mode is applied.
+    // Touch supplies absolute positions: translate from the engine's current
+    // cursor, undo those gains, and keep successive queued events contiguous.
+    bool fullscreenTouch=read32(0x72252c)&& (read32(0x6bd4d0)&0x1000)&&
+        read32(0x6bd124)==uint32_t(displayWidth)&&read32(0x6bd128)==uint32_t(displayHeight);
+    uint32_t gainX=fullscreenTouch?read32(0x722308):65536,gainY=fullscreenTouch?read32(0x72230c):65536;
+    // Resynchronise only once the engine has integrated every earlier delta;
+    // re-reading a stale cursor would apply the same motion twice.
+    if(fullscreenTouch&&!pending.empty()&&!mouseMotionPending()){cursorX=int32_t(read32(0x7222f0));cursorY=int32_t(read32(0x7222f4));}
     for(const auto& event:pending){
         uint32_t time=messageTime(),sequence=++inputSequence;
         int32_t dx=0,dy=0,dz=0;
         if(event.kind==AndroidGuestInput::Pointer){
             int32_t x=int32_t(event.x*std::max(displayWidth-1,0)),y=int32_t(event.y*std::max(displayHeight-1,0));
             dx=x-cursorX;dy=y-cursorY;cursorX=x;cursorY=y;
+            if(fullscreenTouch&&gainX&&gainY){dx=engineCounts(dx,gainX);dy=engineCounts(dy,gainY);}
             if(event.code<3)inputButtons[event.code]=event.down?128:0;
+        }else if(event.kind==AndroidGuestInput::Motion){
+            // The engine recentres its cursor while the right button pans, so
+            // camera drags must arrive as deltas rather than absolute targets.
+            // Carry sub-count remainders so slow drags are not lost to rounding.
+            double countsX=event.x*displayWidth*(fullscreenTouch&&gainX?65536.0/gainX:1)+motionRemainder[0];
+            double countsY=event.y*displayHeight*(fullscreenTouch&&gainY?65536.0/gainY:1)+motionRemainder[1];
+            dx=int32_t(std::trunc(countsX));dy=int32_t(std::trunc(countsY));motionRemainder[0]=countsX-dx;motionRemainder[1]=countsY-dy;
+            cursorX=std::clamp(cursorX+int32_t(std::lround(event.x*displayWidth)),0,std::max(displayWidth-1,0));
+            cursorY=std::clamp(cursorY+int32_t(std::lround(event.y*displayHeight)),0,std::max(displayHeight-1,0));
         }else if(event.kind==AndroidGuestInput::Wheel)dz=int32_t(event.code);else inputKeyboard[event.code]=event.down?128:0;
         for(auto& item:inputObjects){auto& object=item.second;if(!object.acquired)continue;
             bool mouse=event.kind!=AndroidGuestInput::Key;
@@ -48,9 +86,9 @@ void pumpAndroidInput(){
             for(const auto& entry:object.format){
                 uint32_t type=entry.type&255,instance=(entry.type>>8)&65535,value=0;bool changed=false;
                 if(mouse&&type&3){if(instance==0&&dx){value=uint32_t(dx);changed=true;}if(instance==1&&dy){value=uint32_t(dy);changed=true;}if(instance==2&&dz){value=uint32_t(dz);changed=true;}}
-                else if(type&12){if(mouse&&event.code<3&&instance==event.code){value=event.down?128:0;changed=true;}
+                else if(type&12){if(mouse&&event.kind==AndroidGuestInput::Pointer&&event.code<3&&instance==event.code){value=event.down?128:0;changed=true;}
                     if(!mouse&&instance==event.code){value=event.down?128:0;changed=true;}}
-                if(changed&&object.bufferSize){if(object.events.size()>=object.bufferSize){object.events.pop_front();object.overflow=true;}object.events.push_back({entry.offset,value,time,sequence});}
+                if(changed&&object.bufferSize){if(object.events.size()>=object.bufferSize){object.events.pop_front();object.overflow=true;}object.events.push_back({entry.offset,value,time,sequence,mouse&&(type&3)&&instance<2});}
             }
         }
     }
@@ -58,7 +96,7 @@ void pumpAndroidInput(){
 void inputMethod(){
     uint32_t index=(inputToken&0xffff)/16;auto found=inputObjects.find(arg(0));
     if(found==inputObjects.end())throw GuestStop("Invalid DirectInput object");auto& object=found->second;
-    if(index!=9&&index!=10&&index!=25)__android_log_print(ANDROID_LOG_DEBUG,"AMRTS","Input type=%u method=%u caller=%08x",object.type,index,g_cur_func);
+    if(traceCalls&&index!=9&&index!=10&&index!=25)__android_log_print(ANDROID_LOG_DEBUG,"AMRTS","Input type=%u method=%u caller=%08x",object.type,index,g_cur_func);
     if(index==0){bool supported=guidEquals(arg(1),iidUnknown)||guidEquals(arg(1),object.type?inputDeviceIid:inputIid);write32(arg(2),supported?arg(0):0);if(supported)++object.references;ret(supported?0:0x80004002u,3);return;}
     if(index==1){ret(++object.references,1);return;}
     if(index==2){uint32_t count=--object.references;if(!count){uint32_t address=arg(0);inputObjects.erase(address);heaps->free(GuestHeaps::process,address);}ret(count,1);return;}

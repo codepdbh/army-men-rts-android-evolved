@@ -20,9 +20,11 @@
 | Texto, idioma, reloj y versión del PE | CP1252/UTF-8, español y recursos del ejecutable |
 | Backend Vulkan 1.1 | Dispositivo real y prueba de framebuffer RGBA con lectura de píxeles comprobados en Adreno 610 |
 | Interfaces DirectDraw/Direct3D 7 | Enumeración, referencias COM y consultas iniciales de capacidades; creación de superficies pendiente |
-| Audio, vídeo, controles y gameplay | Pendiente |
+| Audio | Miles Sound System sobre AAudio: efectos WAV y música/voces MP3 (minimp3, dominio público), con volumen general propio del port |
+| Controles táctiles | Esquema RTS completo a partir de los atajos del juego; ver [controles](docs/TOUCH_CONTROLS.md) |
+| Vídeos Bink y campaña completa | Pendiente |
 
-El APK local ejecuta el inicio del juego mediante el c?digo ARM64 generado. La prueba ADB permanece limitada a 30 segundos. El bot?n **Iniciar (experimental)** usa una ruta continua, con presentaci?n horizontal Android y entrada t?ctil, probada en el S25 Ultra. Al salir de la pantalla o cambiar de aplicaci?n se detiene la sesi?n; volver inicia el juego desde cero, a?n sin reanudar una partida. **Es un prototipo con la primera misi?n ejecutada**, no una campa?a completa validada: siguen pendientes llamadas del motor, audio y v?deos. El renderizador traduce DirectDraw/Direct3D 7 sobre Vulkan 1.1, distinto del puente Direct3D 9 de [NFSU2 Android Evolved](https://github.com/codepdbh/nfsu2-recompiled).
+El APK local ejecuta el inicio del juego mediante el c?digo ARM64 generado. La prueba ADB permanece limitada a 30 segundos. El bot?n **Iniciar (experimental)** usa una ruta continua, con presentaci?n horizontal Android y entrada t?ctil, probada en el S25 Ultra. Al salir de la pantalla o cambiar de aplicaci?n se detiene la sesi?n; volver inicia el juego desde cero, a?n sin reanudar una partida. **Es un prototipo con la primera misi?n ejecutada**, no una campa?a completa validada: siguen pendientes llamadas del motor y v?deos. El renderizador traduce DirectDraw/Direct3D 7 sobre Vulkan 1.1, distinto del puente Direct3D 9 de [NFSU2 Android Evolved](https://github.com/codepdbh/nfsu2-recompiled).
 
 ## Controles t?ctiles
 

@@ -44,6 +44,7 @@ uint32_t graphicsRelease(uint32_t object){
     auto found=graphicsObjects.find(object);if(found==graphicsObjects.end())throw GuestStop("Invalid graphics release");
     auto owner=found->second.owner;if(!owner->references)throw GuestStop("Graphics COM reference underflow");
     uint32_t count=--owner->references;if(count)return count;
+    if(graphics)graphics->flushDraws();
     for(const auto& texture:owner->textures)if(texture.second)graphicsRelease(texture.second);owner->textures.clear();
     for(uint32_t child:owner->attached)graphicsRelease(child);owner->attached.clear();
     for(const auto& item:owner->interfaces){graphicsObjects.erase(item.second);heaps->free(GuestHeaps::process,item.second);}owner->interfaces.clear();
@@ -156,7 +157,7 @@ void graphicsDraw(const std::shared_ptr<GraphicsOwner>& device,uint32_t primitiv
         auto texture=device->textures.find(stage);if(texture!=device->textures.end()&&texture->second)textures[stage]=graphicsObjects.at(texture->second).owner->image.get();
     }
     VulkanSurface* depth=nullptr;for(uint32_t child:target->attached)if(graphicsObjects.at(child).owner->description.caps[0]&0x20000){depth=graphicsObjects.at(child).owner->image.get();break;}
-    __android_log_print(ANDROID_LOG_DEBUG,"AMRTS","Draw primitive=%u fvf=%08x vertices=%u indices=%u",primitive,fvf,count,uint32_t(indices.size()));
+    if(traceCalls)__android_log_print(ANDROID_LOG_DEBUG,"AMRTS","Draw primitive=%u fvf=%08x vertices=%u indices=%u",primitive,fvf,count,uint32_t(indices.size()));
     graphics->draw(*target->image,depth,textures[0],textures[1],vertices,indices,state);target->gpuWritten=true;
 }
 void graphicsMethod(){
@@ -165,7 +166,7 @@ void graphicsMethod(){
     auto found=graphicsObjects.find(arg(0));if(found==graphicsObjects.end()||found->second.kind!=kind)
         throw GuestStop("Invalid DirectDraw/Direct3D object at 0x"+hex(arg(0)));
     auto owner=found->second.owner;
-    if(index!=20&&index!=21&&index!=35&&index!=36&&index!=37)__android_log_print(ANDROID_LOG_DEBUG,"AMRTS","DX7 interface=%u method=%u caller=%08x",uint32_t(kind),index,g_cur_func);
+    if(traceCalls&&index!=20&&index!=21&&index!=35&&index!=36&&index!=37)__android_log_print(ANDROID_LOG_DEBUG,"AMRTS","DX7 interface=%u method=%u caller=%08x",uint32_t(kind),index,g_cur_func);
     if(index==0){
         uint32_t result=0;
         if(guidEquals(arg(1),iidUnknown))result=owner->identity;
@@ -187,6 +188,12 @@ void graphicsMethod(){
         throw GuestStop("VertexBuffer7 method pending: "+std::to_string(index));
     }
     if(kind==GraphicsKind::Surface7){
+        if(index==8){
+            if(arg(1)){ret(0x80070057u,3);return;}
+            auto found=std::find(owner->attached.begin(),owner->attached.end(),arg(2));
+            if(found==owner->attached.end()){ret(0x887600ffu,3);return;}
+            uint32_t child=*found;owner->attached.erase(found);graphicsRelease(child);ret(0,3);return;
+        }
         if(index==9){
             uint32_t context=arg(1),callback=arg(2),description=allocate(124);
             auto children=owner->attached;
@@ -229,7 +236,15 @@ void graphicsMethod(){
             uint32_t output=arg(index==25?2:1);uint32_t size=read32(output);
             if(size!=124){ret(0x80070057u,index==25?5:2);return;}
             DxSurfaceDesc description=owner->description;
-            if(index==25){if(arg(1))throw GuestStop("Surface rectangle lock pending");if(owner->locked){ret(0x80070057u,5);return;}if(!(arg(3)&0x2000))downloadGuestSurface(*owner);owner->locked=true;owner->readOnly=(arg(3)&0x10)!=0;description.surface=owner->pixels;description.flags|=0x800;}
+            if(index==25){
+                if(arg(1))throw GuestStop("Surface rectangle lock pending");if(owner->locked){ret(0x80070057u,5);return;}
+                // This exact Flip path locks/unlocks solely to flush D3D;
+                // it never accesses lpSurface. Vulkan already synchronizes it.
+                bool flushOnly=g_cur_func==0x4200f0&&arg(3)==1;
+                if(!flushOnly&&!(arg(3)&0x2000))downloadGuestSurface(*owner);
+                owner->locked=true;owner->readOnly=flushOnly||(arg(3)&0x10)!=0;
+                description.surface=owner->pixels;description.flags|=0x800;
+            }
             std::memcpy(kernelPtr(output,124,true),&description,124);ret(0,index==25?5:2);return;
         }
         if(index==21){std::memcpy(kernelPtr(arg(1),32,true),&owner->description.format,32);ret(0,2);return;}
@@ -416,9 +431,12 @@ void graphicsMethod(){
     }
     if(index==8){
         uint32_t callback=arg(4),context=arg(3),filter=arg(2),description=allocate(124);
-        const uint32_t dimensions[][2]={{640,480},{800,600},{1024,768},{1280,720},{1280,960},{1280,1024}};
+        const uint32_t dimensions[][2]={{640,480},{800,600},{1024,768},{1280,720},{1280,960},{1280,1024},
+            {1600,900},{1600,1200},{1920,1080},{2340,1080},{2560,1440}};
+        static_assert(sizeof(dimensions)/sizeof(dimensions[0])*2<=22,"Original engine video-mode table capacity");
         bool finished=false;
         for(uint32_t bits:{16u,32u}){for(const auto& dimensionsItem:dimensions){
+            if(dimensionsItem[0]>graphics->gpu().maxTextureSize||dimensionsItem[1]>graphics->gpu().maxTextureSize)continue;
             DxSurfaceDesc mode=displayMode(*owner,kind,dimensionsItem[0],dimensionsItem[1],bits);
             if(filter){uint32_t flags=read32(filter+4);
                 if((flags&4)&&read32(filter+12)!=mode.width)continue;
@@ -453,6 +471,7 @@ void graphicsMethod(){
         owner->width=width;owner->height=height;owner->bits=bits;
         if(kind!=GraphicsKind::Draw1&&arg(4))owner->refresh=arg(4);
         displayWidth=width;displayHeight=height;
+        __android_log_print(ANDROID_LOG_INFO,"AMRTS","Display mode %ux%u %u bits",width,height,bits);
         if(owner->window&&windows.count(owner->window)){windows.at(owner->window).width=width;windows.at(owner->window).height=height;}
         ret(0,count);return;
     }

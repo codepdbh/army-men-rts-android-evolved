@@ -1,7 +1,7 @@
 std::unique_ptr<VulkanRenderer> graphics;
 uint32_t graphicsDescription=0,graphicsDriverName=0;
 void resetGraphicsObjects();
-void resetGraphics() { resetGraphicsObjects();graphics.reset();graphicsDescription=graphicsDriverName=0; }
+void resetGraphics() { if(graphics)graphics->flushDraws();resetGraphicsObjects();graphics.reset();graphicsDescription=graphicsDriverName=0; }
 void initializeGraphics() {
     if(graphics)return;
     auto renderer=std::make_unique<VulkanRenderer>();renderer->initialize();renderer->testClearReadback();renderer->testTriangleReadback();

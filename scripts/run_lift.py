@@ -115,6 +115,14 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None):
     pe = pefile.PE(exe, fast_load=True)
     base = pe.OPTIONAL_HEADER.ImageBase
     img = pe.get_memory_mapped_image()
+    # The original video enumeration rejects modes above 1280x1024.
+    # Preserve its 22-entry allocation; only widen these two bounds.
+    img = bytearray(img)
+    for address, expected, maximum in ((0x43AF93, 1280, 3840), (0x43AFAE, 1024, 2160)):
+        offset = address - base
+        if img[offset:offset+2] != b'\x81\xf9' or struct.unpack_from('<I', img, offset+2)[0] != expected:
+            raise ValueError(f'Unsupported video-mode instruction at {address:#x}')
+        struct.pack_into('<I', img, offset+2, maximum)
     cat = json.load(open(catalog))
     fds = cat["functions"]
     lifted = {fd["address"] for fd in fds}

@@ -49,6 +49,7 @@ public:
         return accessible(va,bytes,false);
     }
     bool writable(uint32_t va,uint64_t bytes)const{return accessible(va,bytes,true);}
+    template<class F> void forEachCommitted(F visit)const{for(const auto& region:committed_)visit(region.first,region.second);}
     struct Region { uint64_t base, bytes; uint32_t protection, state; };
     Region query(uint32_t va) const {
         uint64_t start = uint64_t(va) / page_ * page_;

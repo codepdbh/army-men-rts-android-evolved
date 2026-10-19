@@ -1,10 +1,12 @@
 #include <android/log.h>
+#include <sys/system_properties.h>
 #include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <chrono>
 #include <cstdio>
 #include <cctype>
+#include <cmath>
 #include <ctime>
 #include <cstring>
 #include <vector>
@@ -25,6 +27,7 @@
 #include "vulkan_renderer.h"
 #include "dx7_guest.h"
 #include "guest_machine.h"
+#include "audio_mixer.h"
 extern "C" {
 #include "recomp_types.h"
 }
@@ -62,6 +65,7 @@ void progressCheck() {
 void importBridge();
 recomp_func_t graphicsLookup(uint32_t va);
 recomp_func_t inputLookup(uint32_t va);
+recomp_func_t manualLookup(uint32_t va);
 }
 
 extern "C" {
@@ -90,7 +94,7 @@ recomp_func_t recomp_lookup(uint32_t va) {
     return nullptr;
 }
 
-recomp_func_t recomp_lookup_manual(uint32_t) { return nullptr; }
+recomp_func_t recomp_lookup_manual(uint32_t va) { return manualLookup(va); }
 recomp_func_t recomp_lookup_import(uint32_t va) {
     progressCheck();
     if(auto function=graphicsLookup(va))return function;

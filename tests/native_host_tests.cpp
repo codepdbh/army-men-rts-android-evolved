@@ -42,6 +42,13 @@ int main(){
         renderer.clearSurface(*target,0xff000000,1);
         renderer.clearRegions(*target,depth.get(),3,0xff00ff00,.5f,{{{16,16},{16,16}}});pixels=renderer.readSurface(*target);
         require(pixels[(20*64+20)*4+1]==255&&pixels[(10*64+10)*4+1]==0,"Region clear overwrote pixels outside its rectangle");
+        auto greenTexture=renderer.createSurface(1,1,false,32);uint32_t green=0xff00ff00;renderer.uploadSurface(*greenTexture,&green);
+        renderer.clearSurface(*target,0xff000000,1);state=VulkanDrawState{};state.viewport[2]=32;state.viewport[3]=64;state.viewport[5]=1;
+        for(auto& vertex:vertices)std::fill(vertex.color,vertex.color+4,1);
+        renderer.draw(*target,nullptr,texture.get(),nullptr,vertices,{0,1,2},state);
+        state.viewport[0]=32;renderer.draw(*target,nullptr,greenTexture.get(),nullptr,vertices,{0,1,2},state);
+        pixels=renderer.readSurface(*target);
+        require(pixels[(32*64+16)*4]==255&&pixels[(32*64+16)*4+1]==0&&pixels[(32*64+48)*4]==0&&pixels[(32*64+48)*4+1]==255,"Queued draws overwrote an earlier texture descriptor");
         std::cout<<"Host input and Vulkan 1.1 pixel tests passed\n";return 0;
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

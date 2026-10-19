@@ -12,6 +12,7 @@ struct ANativeWindow;
 #include <array>
 #include <map>
 struct VulkanPipeline;
+struct VulkanDrawBatch;
 struct VulkanSurface {
     VkDevice device=VK_NULL_HANDLE;
     VkImage image=VK_NULL_HANDLE;
@@ -57,6 +58,7 @@ public:
     void clearRegions(VulkanSurface& target,VulkanSurface* depth,uint32_t flags,uint32_t argb,float value,const std::vector<VkRect2D>& regions);
     void setWindow(ANativeWindow* window);
     void present(VulkanSurface& surface);
+    void flushDraws();
     void draw(VulkanSurface& target,VulkanSurface* depth,VulkanSurface* texture0,VulkanSurface* texture1,
               const std::vector<VulkanVertex>& vertices,const std::vector<uint16_t>& indices,const VulkanDrawState& state);
     bool supportsOptimalFormat(VkFormat format,VkFormatFeatureFlags flags) const;
@@ -77,4 +79,5 @@ private:
     VkPipelineCache pipelineCache_=VK_NULL_HANDLE;
     std::shared_ptr<VulkanSurface> whiteTexture_;
     std::map<std::array<uint32_t,9>,std::shared_ptr<VulkanPipeline>> pipelines_;
+    std::vector<std::shared_ptr<VulkanDrawBatch>> pendingDraws_;
 };

@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.22)
 project(ArmyMenRTSAndroid C CXX)
-add_library(armymen_rts_android SHARED bootstrap.cpp pe_image.cpp pe_version.cpp vulkan_renderer.cpp)
+add_library(armymen_rts_android SHARED bootstrap.cpp pe_image.cpp pe_version.cpp vulkan_renderer.cpp audio_mixer.cpp)
 target_compile_definitions(armymen_rts_android PRIVATE VK_USE_PLATFORM_ANDROID_KHR)
 target_compile_features(armymen_rts_android PRIVATE cxx_std_17)
 target_compile_options(armymen_rts_android PRIVATE -O2 -fno-strict-aliasing -ffp-contract=off)
-target_link_libraries(armymen_rts_android PRIVATE android log vulkan)
+target_link_libraries(armymen_rts_android PRIVATE android log vulkan aaudio)
 
 # The minimal diagnostic APK builds without local game-derived sources.
 # The linked variant runs a bounded guest boot probe through the Win32 HLE.
