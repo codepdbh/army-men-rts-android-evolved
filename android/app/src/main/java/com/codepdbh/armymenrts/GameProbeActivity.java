@@ -257,7 +257,7 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
             "Doble toque sobre una unidad: todas las de ese tipo.\n"+
             "Arrastrar un dedo: mover la camara (el terreno sigue al dedo; deslizar y soltar le da inercia; tocar la detiene).\n"+
             "Mantener hasta que vibre y arrastrar: recuadro de seleccion.\n"+
-            "Mantener y soltar, tocar con dos dedos o ✕: cancelar.\n"+
+            "Tocar con dos dedos o ✕: cancelar o deseleccionar.\n"+
             "Pellizcar: acercar o alejar.\n"+
             "Girar dos dedos: rotar el edificio al colocarlo.\n"+
             "+ : los toques se anaden a la seleccion (Mayus).\n"+

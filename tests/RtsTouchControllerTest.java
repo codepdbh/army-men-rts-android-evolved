@@ -58,7 +58,9 @@ public final class RtsTouchControllerTest {
         require(sink.events.indexOf("0:true")<sink.events.indexOf("0:false"),"Selection rectangle button order changed");
         require(!sink.events.contains("click:0")&&!sink.events.contains("begin"),"Selection issued an extra order/pan");sink.clear();
         // Hold and release: cancel. A quicker press is still a tap.
-        touch.down(100,100,0);touch.up(100,100,RtsTouchController.HOLD_MS+50);require(sink.events.contains("click:1")&&!sink.events.contains("click:0"),"Hold did not cancel");sink.clear();
+        // Holding and releasing without moving is still a tap, never a cancel.
+        touch.down(100,100,0);touch.up(100,100,RtsTouchController.HOLD_MS+50);require(sink.events.contains("click:0")&&!sink.events.contains("click:1"),"Slow tap turned into a cancel");sink.clear();
+        touch.down(100,100,0);touch.hold(RtsTouchController.HOLD_MS);touch.up(100,100,RtsTouchController.HOLD_MS+900);require(sink.events.contains("click:0")&&!sink.events.contains("click:1"),"Long hold turned into a cancel");sink.clear();
         touch.down(100,100,0);touch.up(100,100,RtsTouchController.HOLD_MS-50);require(sink.events.contains("click:0"),"Short press did not select");sink.clear();
         // Two finger drag pans from the centroid; pinch zooms; two finger tap cancels once.
         touch.down(100,100,0);touch.second(100,100,200,100);touch.multiMove(160,150,260,150,30);touch.pointerUp();touch.up(160,150,200);

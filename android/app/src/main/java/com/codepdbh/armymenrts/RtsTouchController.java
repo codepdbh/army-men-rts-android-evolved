@@ -8,7 +8,7 @@ package com.codepdbh.armymenrts;
  *   one finger drag          camera: the touched terrain stays under the finger,
  *                            with inertia after a flick
  *   hold, then drag          selection rectangle (left drag)
- *   hold, release            right click (cancel / deselect)
+ *   hold, release            still a tap: a slow tap must never cancel
  *   two finger tap           right click
  *   two fingers              camera follows the midpoint while the spread
  *                            sets the camera height (pan and zoom together)
@@ -37,7 +37,8 @@ public final class RtsTouchController {
     private enum Mode {IDLE,PENDING,HELD,SELECTING,TWO_PENDING,PANNING,ROTATING,SUPPRESSED}
     /** Normalised border kept free of the resting cursor (engine edge scroll band). */
     public static final float EDGE=.035f;
-    public static final long HOLD_MS=300;
+    /** Arms the selection rectangle; long enough that unhurried taps stay taps. */
+    public static final long HOLD_MS=500;
     /** Velocity is measured over the last part of the drag only. */
     static final long VELOCITY_WINDOW_MS=80,STILL_MS=60;
     static final double TWIST_STEP=Math.toRadians(30);
@@ -140,7 +141,7 @@ public final class RtsTouchController {
     public void up(float x,float y,long time){
         hold(time);
         if(mode==Mode.PENDING){sink.click(nx(x),ny(y),0);sink.rest(inside(nx(x)),inside(ny(y)));}
-        else if(mode==Mode.HELD){sink.click(nx(x),ny(y),1);sink.rest(inside(nx(x)),inside(ny(y)));}
+        else if(mode==Mode.HELD){sink.click(nx(x),ny(y),0);sink.rest(inside(nx(x)),inside(ny(y)));}
         else if(mode==Mode.SELECTING){sink.button(nx(x),ny(y),0,false);sink.rest(inside(nx(x)),inside(ny(y)));}
         else if(mode==Mode.PANNING){sample(x,y,time);endPan(x,y,time,true);}
         mode=Mode.IDLE;

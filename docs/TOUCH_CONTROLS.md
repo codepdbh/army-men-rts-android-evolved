@@ -44,8 +44,8 @@ Los controles de PC no se han supuesto: salen de los propios archivos del juego.
 | --- | --- |
 | Toque | Clic izquierdo: seleccionar u orden contextual; también HUD, construcción y minimapa |
 | Arrastrar un dedo | Cámara: el punto del terreno tocado queda exactamente bajo el dedo; al soltar con velocidad sigue con inercia y un toque la detiene |
-| Mantener 0,3 s (vibra) y arrastrar | Recuadro de selección |
-| Mantener y soltar | Clic derecho (cancelar o deseleccionar) |
+| Mantener 0,5 s (vibra) y arrastrar | Recuadro de selección |
+| Mantener y soltar sin mover | Igual que un toque: un toque lento nunca cancela |
 | Toque con dos dedos | Clic derecho |
 | Dos dedos | La cámara sigue al punto medio y la separación fija la altura (paneo y zoom a la vez, entre `camera.minheight` 20 y `camera.maxheight` 70) |
 | Girar dos dedos | Rotar el edificio que se coloca, en pasos de 30° (`.` y `,`) |
