@@ -38,6 +38,8 @@ struct VulkanDrawState {
     uint32_t alpha[4]{};
     float factor[4]={1,1,1,1};
     float viewport[6]{};
+    // D3DTADDRESS per stage (u0, v0, u1, v1): 1 wrap, 2 mirror, 3 clamp, 4 border.
+    uint32_t address[4]={1,1,1,1};
 };
 
 // Vulkan 1.1 is the explicit instance/device baseline. No 1.2/1.3 entry points.
@@ -78,6 +80,8 @@ private:
     std::vector<VkImage> displayImages_;
     VkPipelineCache pipelineCache_=VK_NULL_HANDLE;
     std::shared_ptr<VulkanSurface> whiteTexture_;
+    std::map<uint32_t,VkSampler> samplers_;
+    VkSampler sampler(uint32_t u,uint32_t v);
     std::map<std::array<uint32_t,9>,std::shared_ptr<VulkanPipeline>> pipelines_;
     std::vector<std::shared_ptr<VulkanDrawBatch>> pendingDraws_;
 };

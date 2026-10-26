@@ -27,6 +27,8 @@ bool queryMappedMemory(uint32_t,uint32_t&,uint32_t&,uint64_t&,uint32_t&);
 
 // Per-call DirectX/DirectInput tracing floods logcat thousands of times per
 // frame; enable it with `adb shell setprop debug.amrts.trace 1`.
+const bool textureDump=[]{char value[PROP_VALUE_MAX]{};__system_property_get("debug.amrts.dumptex",value);return value[0]=='1';}();
+const int drawTint=[]{char value[PROP_VALUE_MAX]{};__system_property_get("debug.amrts.tint",value);return std::atoi(value);}();
 const bool stateTrace=[]{char value[PROP_VALUE_MAX]{};__system_property_get("debug.amrts.states",value);return value[0]=='1';}();
 const bool traceCalls=[]{char value[PROP_VALUE_MAX]{};__system_property_get("debug.amrts.trace",value);return value[0]=='1';}();
 uint32_t kernelArg(uint32_t index) { return MEM32(g_esp + 4 + index * 4); }

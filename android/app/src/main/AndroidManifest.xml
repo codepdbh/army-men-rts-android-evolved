@@ -2,8 +2,8 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
-    <application android:label="Army Men RTS Android Evolved" android:icon="@drawable/icono"
-        android:roundIcon="@drawable/icono" android:allowBackup="false">
+    <application android:label="Army Men RTS Android Evolved" android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="false">
         <receiver android:name=".BootProbeReceiver" android:exported="true"
             android:permission="android.permission.DUMP" />
         <activity android:name=".GameProbeActivity" android:exported="false" android:screenOrientation="landscape"

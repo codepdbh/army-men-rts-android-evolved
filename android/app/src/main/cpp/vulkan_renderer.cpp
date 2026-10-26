@@ -45,6 +45,7 @@ VulkanRenderer::~VulkanRenderer() {
     if(device_)vkDeviceWaitIdle(device_);
     pendingDraws_.clear();
     pipelines_.clear();whiteTexture_.reset();
+    for(auto& item:samplers_)vkDestroySampler(device_,item.second,nullptr);samplers_.clear();
     if(pipelineCache_)vkDestroyPipelineCache(device_,pipelineCache_,nullptr);
     if(device_){vkDeviceWaitIdle(device_);if(swapchain_)vkDestroySwapchainKHR(device_,swapchain_,nullptr);if(pool_)vkDestroyCommandPool(device_,pool_,nullptr);vkDestroyDevice(device_,nullptr);}
     if(display_)vkDestroySurfaceKHR(instance_,display_,nullptr);
@@ -358,6 +359,17 @@ struct VulkanDrawBatch {
         if(descriptor)vkFreeDescriptorSets(upload.device,pipeline->descriptors,1,&descriptor);
     }
 };
+VkSampler VulkanRenderer::sampler(uint32_t u,uint32_t v){
+    auto mode=[](uint32_t address){
+        return address==2?VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:address==3?VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:
+            address==4?VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:VK_SAMPLER_ADDRESS_MODE_REPEAT;};
+    uint32_t key=(u&15)|((v&15)<<4);auto found=samplers_.find(key);if(found!=samplers_.end())return found->second;
+    VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};info.magFilter=info.minFilter=VK_FILTER_LINEAR;info.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    info.addressModeU=mode(u);info.addressModeV=mode(v);info.addressModeW=VK_SAMPLER_ADDRESS_MODE_REPEAT;info.maxLod=0;
+    // D3D's default border colour is transparent black.
+    info.borderColor=VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    VkSampler result=VK_NULL_HANDLE;check(vkCreateSampler(device_,&info,nullptr,&result),"Texture sampler");samplers_[key]=result;return result;
+}
 void VulkanRenderer::flushDraws(){
     if(pendingDraws_.empty())return;
     VkFence fence=pendingDraws_.back()->upload.fence;
@@ -442,7 +454,9 @@ void VulkanRenderer::draw(VulkanSurface& target,VulkanSurface* depth,VulkanSurfa
     VkImageView views[]={target.view,depth?depth->view:VK_NULL_HANDLE};
     VkFramebufferCreateInfo framebuffer{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};framebuffer.renderPass=resources.pass;framebuffer.attachmentCount=depth?2:1;framebuffer.pAttachments=views;framebuffer.width=target.width;framebuffer.height=target.height;framebuffer.layers=1;
     check(vkCreateFramebuffer(device_,&framebuffer,nullptr,&frame.handle),"D3D framebuffer");
-    VkDescriptorImageInfo images[]={{resources.sampler,texture0->view,VK_IMAGE_LAYOUT_GENERAL},{resources.sampler,texture1->view,VK_IMAGE_LAYOUT_GENERAL}};
+    // Per-draw addressing: terrain shadows and build footprints rely on CLAMP
+    // so texture coordinates outside 0..1 take the transparent edge.
+    VkDescriptorImageInfo images[]={{sampler(state.address[0],state.address[1]),texture0->view,VK_IMAGE_LAYOUT_GENERAL},{sampler(state.address[2],state.address[3]),texture1->view,VK_IMAGE_LAYOUT_GENERAL}};
     VkWriteDescriptorSet writes[2]{};for(uint32_t i=0;i<2;++i){writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;writes[i].dstSet=batch->descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;writes[i].pImageInfo=&images[i];}vkUpdateDescriptorSets(device_,2,writes,0,nullptr);
     VkViewport viewport{state.viewport[0],state.viewport[1],state.viewport[2],state.viewport[3],state.viewport[4],state.viewport[5]};
     VkRect2D scissor{{0,0},{target.width,target.height}};

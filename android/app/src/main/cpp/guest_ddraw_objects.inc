@@ -6,7 +6,7 @@ struct GraphicsOwner {
     std::shared_ptr<VulkanSurface> image;
     DxSurfaceDesc description{};
     uint32_t pixels=0,target=0;
-    bool locked=false,readOnly=false,gpuWritten=false;
+    bool locked=false,readOnly=false,gpuWritten=false,renderTarget=false;
     std::vector<uint32_t> attached;
     std::vector<uint8_t> viewport=std::vector<uint8_t>(24),material=std::vector<uint8_t>(68);
     std::map<uint32_t,std::vector<uint8_t>> transforms,lights;
@@ -65,6 +65,14 @@ void uploadGuestSurface(GraphicsOwner& owner){
         uint64_t out=(uint64_t(y)*desc.width+x)*4;rgba[out]=component(pixel,desc.format.r,0);
         rgba[out+1]=component(pixel,desc.format.g,0);rgba[out+2]=component(pixel,desc.format.b,0);rgba[out+3]=component(pixel,desc.format.a,255);
     }
+    if(textureDump&&desc.format.a==0xf000){
+        // debug.amrts.dumptex 1: save alpha textures as TGA for inspection.
+        static int dumped=0;
+        if(dumped<400){char path[256];std::snprintf(path,sizeof path,"%s/texdump/%03d_%ux%u.tga",hostGameRoot.c_str(),dumped++,desc.width,desc.height);
+            std::filesystem::create_directories(hostGameRoot+"/texdump");
+            if(FILE* file=std::fopen(path,"wb")){uint8_t header[18]{};header[2]=2;header[12]=desc.width&255;header[13]=desc.width>>8;header[14]=desc.height&255;header[15]=desc.height>>8;header[16]=32;header[17]=0x28;
+                std::fwrite(header,1,18,file);for(size_t i=0;i<rgba.size();i+=4){uint8_t bgra[4]={rgba[i+2],rgba[i+1],rgba[i],rgba[i+3]};std::fwrite(bgra,1,4,file);}std::fclose(file);}}
+    }
     graphics->uploadSurface(*owner.image,rgba.data());owner.gpuWritten=false;
 }
 void downloadGuestSurface(GraphicsOwner& owner){
@@ -118,6 +126,21 @@ void graphicsDraw(const std::shared_ptr<GraphicsOwner>& device,uint32_t primitiv
     uint32_t viewport[6];std::memcpy(viewport,device->viewport.data(),24);float minZ,maxZ;std::memcpy(&minZ,viewport+4,4);std::memcpy(&maxZ,viewport+5,4);
     if(!viewport[2]||!viewport[3])throw GuestStop("Draw viewport missing");
     std::vector<VulkanVertex> vertices(count);
+    // debug.amrts.tint 1: colour each draw by its stage-0 texture format
+    // (565 magenta, 4444 cyan, 1555 yellow) to identify what draws what.
+    uint32_t tintFormat=0;
+    if(drawTint==2){
+        auto render=[&](uint32_t index,uint32_t fallback){auto found=device->renderStates.find(index);return found==device->renderStates.end()?fallback:found->second;};
+        auto stage=device->stageStates.find(1);uint32_t op=stage==device->stageStates.end()?4:stage->second;
+        auto texture=device->textures.find(0);bool rtt=texture!=device->textures.end()&&texture->second&&graphicsObjects.at(texture->second).owner->renderTarget;
+        tintFormat=rtt?0x0000ff:op==5?0xff0000:render(27,0)&&render(20,1)==2?0x00ff00:0;
+    }else if(drawTint==3){
+        auto render=[&](uint32_t index,uint32_t fallback){auto found=device->renderStates.find(index);return found==device->renderStates.end()?fallback:found->second;};
+        auto texture=device->textures.find(0);bool untextured=texture==device->textures.end()||!texture->second;
+        tintFormat=untextured&&render(27,0)?0xffff00:0;
+    }else if(drawTint){auto texture=device->textures.find(0);
+        if(texture!=device->textures.end()&&texture->second){const auto& f=graphicsObjects.at(texture->second).owner->description.format;
+            tintFormat=f.bits==16&&!f.a?0xff00ff:f.a==0xf000?0x00ffff:f.a==0x8000?0xffff00:0;}}
     auto unpack=[](uint32_t color,float* rgba){rgba[0]=((color>>16)&255)/255.0f;rgba[1]=((color>>8)&255)/255.0f;rgba[2]=(color&255)/255.0f;rgba[3]=(color>>24)/255.0f;};
     auto transform=[&](float* value,uint32_t state){
         auto found=device->transforms.find(state);if(found==device->transforms.end())return;
@@ -133,7 +156,9 @@ void graphicsDraw(const std::shared_ptr<GraphicsOwner>& device,uint32_t primitiv
             vertex.position[2]=(vertex.position[2]-minZ)/(maxZ-minZ)*w;vertex.position[3]=w;
         }else{transform(vertex.position,256);transform(vertex.position,2);transform(vertex.position,3);vertex.position[1]=-vertex.position[1];}
         if(fvf&0x20)offset+=12;
-        uint32_t color=UINT32_MAX;if(fvf&0x40){std::memcpy(&color,input+offset,4);offset+=4;}unpack(color,vertex.color);
+        uint32_t color=UINT32_MAX;if(fvf&0x40){std::memcpy(&color,input+offset,4);offset+=4;}
+        if(tintFormat){color=(color&0xff000000u)|tintFormat;}
+        unpack(color,vertex.color);
         if(fvf&0x80)offset+=4;
         uint32_t textures=(fvf>>8)&15;
         for(uint32_t t=0;t<textures;++t){uint32_t format=(fvf>>(16+t*2))&3,n=format==0?2:format==1?3:format==2?4:1;
@@ -154,6 +179,8 @@ void graphicsDraw(const std::shared_ptr<GraphicsOwner>& device,uint32_t primitiv
         auto get=[&](uint32_t key,uint32_t fallback){auto found=device->stageStates.find((stage<<16)|key);return found==device->stageStates.end()?fallback:found->second;};
         state.stages[stage*4]=get(1,stage?1:4);state.stages[stage*4+1]=get(2,2);state.stages[stage*4+2]=get(3,stage?1:0);
         state.stages[stage*4+3]=get(4,stage?1:2)|(get(5,2)<<8)|(get(6,stage?1:0)<<16);
+        // D3DTSS_ADDRESS (12) sets both; ADDRESSU (13) / ADDRESSV (14) override.
+        state.address[stage*2]=get(13,1);state.address[stage*2+1]=get(14,1);
         auto texture=device->textures.find(stage);if(texture!=device->textures.end()&&texture->second)textures[stage]=graphicsObjects.at(texture->second).owner->image.get();
     }
     VulkanSurface* depth=nullptr;for(uint32_t child:target->attached)if(graphicsObjects.at(child).owner->description.caps[0]&0x20000){depth=graphicsObjects.at(child).owner->image.get();break;}
@@ -273,7 +300,7 @@ void graphicsMethod(){
         if(index==7){uint32_t object=graphicsInterface(owner->parent->parent,GraphicsKind::Direct3D7);++owner->parent->parent->references;write32(arg(1),object);ret(0,2);return;}
         if(index==8){
             auto target=graphicsObjects.find(arg(1));if(target==graphicsObjects.end()||target->second.kind!=GraphicsKind::Surface7){ret(0x80070057u,3);return;}
-            auto old=owner->parent;owner->parent=target->second.owner;++owner->parent->references;owner->target=arg(1);graphicsRelease(old->identity);ret(0,3);return;
+            auto old=owner->parent;owner->parent=target->second.owner;target->second.owner->renderTarget=true;++owner->parent->references;owner->target=arg(1);graphicsRelease(old->identity);ret(0,3);return;
         }
         if(index==14){
             uint32_t transform=arg(1);float right[16],left[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1},result[16]{};
@@ -325,13 +352,19 @@ void graphicsMethod(){
             bool stage=index==36||index==37;
             auto& states=stage?owner->stageStates:(index==44||index==45)?owner->enabledLights:owner->renderStates;
             uint32_t key=stage?((arg(1)<<16)|arg(2)):arg(1),valueIndex=stage?3:2;
-            if(index==20||index==37||index==44)states[key]=arg(valueIndex);
+            if(index==20||index==37||index==44){
+                states[key]=arg(valueIndex);
+                // D3DTSS_ADDRESS sets both D3DTSS_ADDRESSU and D3DTSS_ADDRESSV.
+                if(stage&&arg(2)==12){states[(arg(1)<<16)|13]=arg(valueIndex);states[(arg(1)<<16)|14]=arg(valueIndex);}
+            }
             else write32(arg(valueIndex),states[key]);ret(0,stage?4:3);return;
         }
         if(index==35||index==34){
             uint32_t stage=arg(1);if(stage>=8){ret(0x80070057u,3);return;}
             if(index==35){uint32_t texture=arg(2);
-                if(texture&&(!graphicsObjects.count(texture)||graphicsObjects.at(texture).kind!=GraphicsKind::Surface7)){ret(0x80070057u,3);return;}
+                if(texture&&(!graphicsObjects.count(texture)||graphicsObjects.at(texture).kind!=GraphicsKind::Surface7)){
+                    if(stateTrace){static int rejected=0;if(rejected++<20)__android_log_print(ANDROID_LOG_WARN,"AMRTS","SetTexture rejected %08x kind %d from %08x",texture,graphicsObjects.count(texture)?int(graphicsObjects.at(texture).kind):-1,g_cur_func);}
+                    ret(0x80070057u,3);return;}
                 uint32_t previous=owner->textures[stage];if(texture)++graphicsObjects.at(texture).owner->references;
                 owner->textures[stage]=texture;if(previous)graphicsRelease(previous);
             }else{uint32_t texture=owner->textures[stage];if(texture)++graphicsObjects.at(texture).owner->references;write32(arg(2),texture);}
