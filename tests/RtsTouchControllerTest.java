@@ -32,13 +32,16 @@ public final class RtsTouchControllerTest {
     static long count(ArrayList<String> events,String value){return events.stream().filter(event->event.equals(value)).count();}
     static boolean any(ArrayList<String> events,String prefix){return events.stream().anyMatch(event->event.startsWith(prefix));}
     public static void main(String[] args){
-        Sink sink=new Sink();RtsTouchController touch=new RtsTouchController(sink,1000,500,1);
+        Sink sink=new Sink();
+        // Test layout: bottom 10% is interface, bottom-right corner the minimap.
+        RtsTouchController.Zones zones=(x,y)->y>.9f?(x>.8f?RtsTouchController.MINIMAP:RtsTouchController.HUD):RtsTouchController.WORLD;
+        RtsTouchController touch=new RtsTouchController(sink,zones,1000,500,1);
         touch.down(100,100,0);touch.up(100,100,80);
         require(sink.events.contains("click:0"),"Tap did not issue the contextual left click");
         require(sink.events.indexOf("click:0")<sink.events.indexOf("rest"),"Cursor parked before the click");
         require(sink.events.get(1).equals("stop"),"Touching did not stop camera inertia");sink.clear();
         // Taps on the HUD/minimap at the screen border must not leave the cursor in the edge-scroll band.
-        touch.down(999,499,0);touch.up(999,499,80);
+        touch.down(999,10,0);touch.up(999,10,80);
         require(sink.events.contains("click:0"),"Edge tap lost its click");
         require(sink.restX<=1-RtsTouchController.EDGE&&sink.restY<=1-RtsTouchController.EDGE,"Cursor rests in the edge-scroll band");sink.clear();
         // One finger drag: anchored at the touch point, then the absolute finger position.
@@ -88,6 +91,33 @@ public final class RtsTouchControllerTest {
         require(count(sink.events,"0:false")==1,"Cancelled selection left a stuck button");sink.clear();
         touch.down(100,100,0);touch.move(200,200);touch.cancel();
         require(sink.events.get(sink.events.size()-1).equals("stop"),"Cancelled pan kept moving the camera");
+        // Interface: tapping clicks and parks the cursor over the map (so a
+        // structure picked from a menu appears where it can be seen).
+        touch.down(300,480,0);touch.up(300,480,80);
+        require(sink.events.contains("click:0")&&sink.restX==RtsTouchController.REST_X&&sink.restY==RtsTouchController.REST_Y,"Interface tap did not rest over the map");sink.clear();
+        // Interface drag is a mouse drag (minimap scroll), never a camera drag.
+        touch.down(900,480,0);touch.move(930,470,16);touch.move(960,460,32);touch.up(960,460,48);
+        require(sink.events.contains("0:true")&&sink.events.contains("0:false")&&!sink.events.contains("begin"),"Minimap drag moved the 3D camera: "+sink.events);sink.clear();
+        // Long press on the interface is a right click (production queues).
+        touch.down(300,480,0);touch.hold(RtsTouchController.HOLD_MS);touch.up(300,480,700);
+        require(sink.events.contains("click:1")&&!sink.events.contains("click:0"),"Interface long press was not a right click");sink.clear();
+        // Box mode: a plain one finger drag selects instead of moving the camera.
+        touch.setBoxMode(true);touch.down(100,100,0);touch.move(200,200,16);touch.up(200,200,40);touch.setBoxMode(false);
+        require(sink.events.indexOf("0:true")<sink.events.indexOf("0:false")&&!sink.events.contains("begin"),"Box mode did not select");sink.clear();
+        // Placement: taps and drags move the structure without clicking; the
+        // drag is relative so the finger never covers it.
+        touch.setPlacing(true);
+        touch.down(700,200,0);touch.up(700,200,60);
+        require(!any(sink.events,"click")&&Math.abs(touch.aimX()-.7f)<1e-4f&&Math.abs(touch.aimY()-.4f)<1e-4f,"Placement tap clicked or missed: "+sink.events);sink.clear();
+        touch.down(100,400,0);touch.move(150,400,16);touch.move(200,350,32);touch.up(200,350,50);
+        require(!any(sink.events,"click")&&!sink.events.contains("begin")&&Math.abs(touch.aimX()-.8f)<1e-4f&&Math.abs(touch.aimY()-.3f)<1e-4f,"Placement drag was not relative: "+touch.aimX()+","+touch.aimY());sink.clear();
+        touch.down(100,400,0);touch.hold(RtsTouchController.HOLD_MS);touch.up(100,400,900);
+        require(!any(sink.events,"click")&&!sink.events.contains("feedback"),"Placement hold clicked");sink.clear();
+        touch.down(500,250,0);touch.second(500,250,600,250);touch.pointerUp();touch.up(500,250,80);
+        require(sink.events.contains("click:1"),"Two finger tap did not cancel the structure");sink.clear();
+        // The interface still works while placing (pick another structure).
+        touch.down(300,480,0);touch.up(300,480,80);require(sink.events.contains("click:0"),"Interface blocked while placing");
+        touch.setPlacing(false);sink.clear();
         System.out.println("RTS touch gesture tests passed");
 
         // Frame-synchronised delivery: a click spans an engine input poll at any frame rate.
@@ -96,6 +126,13 @@ public final class RtsTouchControllerTest {
         require(guest.events.equals(java.util.List.of("0:true@0")),"Release was not held for a frame: "+guest.events);
         guest.frame=1;input.pump(10);require(guest.events.size()==1,"Released after a single present");
         guest.frame=2;input.pump(20);require(guest.events.contains("0:false@2")&&guest.events.get(2).equals("move"),"Click/rest order wrong: "+guest.events);
+        // Parking after a release waits for the engine to read the release first.
+        guest.events.clear();guest.frame=10;input.click(.5f,.5f,0);input.restAt(.2f,.2f);
+        for(int i=0;i<3;i++){input.pump(40+i);guest.frame++;}
+        require(guest.events.contains("0:false@12")&&!guest.events.contains("move"),"Cursor parked in the release frame: "+guest.events);
+        for(int i=0;i<3;i++){input.pump(50+i);guest.frame++;}
+        require(guest.events.get(guest.events.size()-1).equals("move"),"Cursor never parked");
+        guest.frame=2;
         guest.events.clear();input.click(.5f,.5f,0);input.pump(30);input.pump(330);
         require(guest.events.contains("0:false@2"),"Stalled game kept the button pressed");
         guest.events.clear();input.button(.5f,.5f,1,true);input.pump(400);input.clear();

@@ -17,6 +17,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -45,6 +46,8 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
     private static native void nativeWheel(long session,int steps);
     private static native void nativeVolume(long session,int volume);
     private static native int nativeFrames(long session);
+    private static native int nativeCursorKind(long session);
+    private static native int nativeDisplaySize(long session);
     private static native String nativeVisualProbe(String folder,Surface surface,long session);
     // DirectInput scan codes used by the overlay.
     // Bindings from the game's own if_game_keybind.cfg (client/p/ingame.x).
@@ -55,8 +58,13 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
     private TextView status;
     private SurfaceView game;
     private TouchMarks marks;
-    private Button menu,additive;
-    private LinearLayout tools;
+    private Button menu,additive,boxButton,placeButton;
+    private LinearLayout tools,placeBar;
+    // Engine cursor kinds (guest_cursor.inc).
+    private static final int CURSOR_MOVE=2,CURSOR_ATTACK=3,CURSOR_CONSTRUCT=4,CURSOR_NO_CONSTRUCT=5,CURSOR_NO=6,CURSOR_COLLECT=7,CURSOR_RALLY=8,CURSOR_ENTER=9,CURSOR_USE=10;
+    private boolean placing,touching;
+    private long constructSeen;
+    private float fingerX,fingerY;
     private PopupWindow popup;
     private RtsTouchController touch;
     private SharedPreferences preferences;
@@ -71,7 +79,7 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
         public int frames(){return nativeFrames(session);}
     });
     private final Runnable inputPump=new Runnable(){public void run(){
-        if(session!=0)input.pump(SystemClock.uptimeMillis());
+        if(session!=0){input.pump(SystemClock.uptimeMillis());updateCursorState();}
         handler.postDelayed(this,4);
     }};
     private final Runnable holdCheck=()->{if(touch!=null&&touch.waitingForHold())touch.hold(SystemClock.uptimeMillis());};
@@ -86,11 +94,22 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
         private int next;private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
         TouchMarks(Context context){super(context);paint.setStyle(Paint.Style.STROKE);}
         void mark(float px,float py,int argb){x[next]=px;y[next]=py;color[next]=argb;time[next]=SystemClock.uptimeMillis();next=(next+1)%8;invalidate();}
+        private String hint;private float hintX,hintY;private final Paint text=new Paint(Paint.ANTI_ALIAS_FLAG),chip=new Paint(Paint.ANTI_ALIAS_FLAG);
+        /** What a tap here would do, shown above the finger while it rests. */
+        void hint(String label,float px,float py){
+            if(java.util.Objects.equals(label,hint)&&px==hintX&&py==hintY)return;hint=label;hintX=px;hintY=py;invalidate();
+        }
         @Override protected void onDraw(Canvas canvas){
             long now=SystemClock.uptimeMillis();boolean live=false;float density=getResources().getDisplayMetrics().density;
             for(int i=0;i<8;i++){long age=now-time[i];if(time[i]==0||age>350)continue;live=true;float t=age/350f;
                 paint.setColor(color[i]);paint.setAlpha(Math.round(220*(1-t)));paint.setStrokeWidth(3*density);
                 canvas.drawCircle(x[i],y[i],(10+18*t)*density,paint);}
+            if(hint!=null){
+                text.setColor(0xfff4ecd7);text.setTextSize(15*density);text.setTypeface(Typeface.DEFAULT_BOLD);
+                float w=text.measureText(hint)+20*density,h=28*density,cx=hintX,top=Math.max(4*density,hintY-72*density);
+                chip.setColor(0xe6162b22);canvas.drawRoundRect(cx-w/2,top,cx+w/2,top+h,8*density,8*density,chip);
+                canvas.drawText(hint,cx-w/2+10*density,top+h-9*density,text);
+            }
             if(live)postInvalidateOnAnimation();
         }
     }
@@ -101,26 +120,42 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
         FrameLayout frame=new FrameLayout(this);game=new SurfaceView(this);
         game.getHolder().addCallback(this);frame.addView(game);
         game.setOnTouchListener((view,event)->handleTouch(event));
+        game.setOnGenericMotionListener((view,event)->event.isFromSource(InputDevice.SOURCE_MOUSE)&&handleMouse(event));
         marks=new TouchMarks(this);frame.addView(marks,new FrameLayout.LayoutParams(-1,-1));
         status=new TextView(this);status.setTextColor(Color.WHITE);status.setBackgroundColor(0xb0162b22);
         status.setTextSize(15);status.setPadding(dp(12),dp(8),dp(12),dp(8));
         FrameLayout.LayoutParams textPlacement=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);
         textPlacement.topMargin=dp(12);frame.addView(status,textPlacement);
-        menu=button("≡",()->showMenu());menu.setTextSize(25);menu.setContentDescription("Menu del juego y controles");
-        FrameLayout.LayoutParams placement=new FrameLayout.LayoutParams(dp(48),dp(48),Gravity.TOP|Gravity.LEFT);
-        placement.leftMargin=dp(12);placement.topMargin=dp(12);frame.addView(menu,placement);
-        // Top row beside the menu: the original HUD occupies the bottom and the top-right corner.
-        tools=new LinearLayout(this);tools.setOrientation(LinearLayout.HORIZONTAL);
+        // One row, centred at the top: the game's build column opens on the
+        // left edge, its HUD sits at the bottom and resources at the top right.
+        LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
+        menu=button("≡",()->showMenu());menu.setTextSize(22);menu.setContentDescription("Menu del juego y controles");
+        menu.setPadding(0,0,0,0);menu.setMinHeight(0);menu.setMinimumHeight(0);menu.setMinWidth(0);menu.setMinimumWidth(0);
+        LinearLayout.LayoutParams menuSize=new LinearLayout.LayoutParams(dp(40),dp(40));menuSize.rightMargin=dp(8);row.addView(menu,menuSize);
+        tools=new LinearLayout(this);tools.setOrientation(LinearLayout.HORIZONTAL);row.addView(tools);
         addTool("✕","Cancelar o deseleccionar (clic derecho)",()->{cancelGesture();input.click(input.cursorX(),input.cursorY(),1);});
         additive=addTool("+","Anadir a la seleccion (Mayus)",()->setAddMode(!addMode));
+        boxButton=addTool("▭","Modo recuadro: arrastrar selecciona",()->setBoxMode(!touch.boxMode()));
         addTool("Todo","Seleccionar todas las unidades (E)",()->input.tapKey(E_SELECT_ALL));
         addTool("Tipo","Seleccionar las del mismo tipo (G)",()->input.tapKey(G_SELECT_TYPE));
         addTool("■","Detener unidades (S)",()->input.tapKey(S_STOP));
         addTool("⌂","Ir al cuartel general (H)",()->input.tapKey(H_HEADQUARTERS));
         addTool("⚑","Ir al ultimo combate (Espacio)",()->input.tapKey(SPACE));
         for(int i=0;i<4;i++)addSquad(i);
-        FrameLayout.LayoutParams toolPlacement=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);
-        toolPlacement.leftMargin=dp(12+48+16);toolPlacement.topMargin=dp(12);frame.addView(tools,toolPlacement);
+        // Start right of the build column (82 of 1024 game pixels) and stay
+        // clear of the resource counters at the top right.
+        FrameLayout.LayoutParams rowPlacement=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);
+        rowPlacement.topMargin=dp(6);rowPlacement.leftMargin=Math.round(getResources().getDisplayMetrics().widthPixels*.09f);
+        frame.addView(row,rowPlacement);
+        // Construction bar: only while the game is placing a structure.
+        placeBar=new LinearLayout(this);placeBar.setOrientation(LinearLayout.HORIZONTAL);placeBar.setVisibility(View.GONE);
+        placeAction("⟲","Girar a la izquierda",()->input.tapKey(PREV_DIR));
+        placeAction("⟳","Girar a la derecha",()->input.tapKey(NEXT_DIR));
+        placeButton=placeAction("✓ Colocar","Colocar el edificio",()->{
+            input.click(touch.aimX(),touch.aimY(),0);marks.mark(touch.aimX()*game.getWidth(),touch.aimY()*game.getHeight(),0xff7bd88f);});
+        placeAction("✕","Cancelar la construccion",()->input.click(touch.aimX(),touch.aimY(),1));
+        FrameLayout.LayoutParams barPlacement=new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL);
+        barPlacement.bottomMargin=dp(84);frame.addView(placeBar,barPlacement);
         tools.setVisibility(preferences.getBoolean("tools",true)?View.VISIBLE:View.GONE);
         setContentView(frame);immersive();
         if(!preferences.getBoolean("gestures_seen_v2",false)){
@@ -128,10 +163,62 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
             handler.postDelayed(()->{if(resumed&&!isFinishing())showGestures();},600);
         }
     }
+    private Button placeAction(String label,String description,Runnable action){
+        Button button=button(label,action);button.setTextSize(label.length()>2?17:26);button.setContentDescription(description);
+        button.setMinHeight(0);button.setMinimumHeight(0);button.setMinWidth(0);button.setMinimumWidth(0);button.setPadding(dp(14),0,dp(14),0);
+        LinearLayout.LayoutParams size=new LinearLayout.LayoutParams(label.length()>2?-2:dp(64),dp(60));size.leftMargin=size.rightMargin=dp(6);
+        placeBar.addView(button,size);return button;
+    }
+    private void setBoxMode(boolean enabled){
+        touch.setBoxMode(enabled);GradientDrawable drawable=background();if(enabled)drawable.setColor(0xe6b99b59);boxButton.setBackground(drawable);
+        boxButton.setTextColor(enabled?0xff162b22:0xfff4ecd7);
+    }
+    /**
+     * Poll the engine cursor: it says whether a structure is being placed and
+     * what a tap under the resting finger would do.
+     */
+    private void updateCursorState(){
+        if(touch==null)return;
+        int kind=nativeCursorKind(session);long now=SystemClock.uptimeMillis();
+        if(kind==CURSOR_CONSTRUCT||kind==CURSOR_NO_CONSTRUCT){
+            constructSeen=now;
+            if(!placing){placing=true;touch.setPlacing(true);placeBar.setVisibility(View.VISIBLE);game.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);}
+            placeButton.setAlpha(kind==CURSOR_CONSTRUCT?1f:.45f);
+        }else if(placing&&!touching&&now-constructSeen>600){
+            placing=false;touch.setPlacing(false);placeBar.setVisibility(View.GONE);
+        }
+        String hint=null;
+        if(touching&&!placing&&touch.waitingForHold()){
+            switch(kind){
+                case CURSOR_MOVE:hint="Mover";break;
+                case CURSOR_ATTACK:hint="Atacar";break;
+                case CURSOR_COLLECT:hint="Recoger";break;
+                case CURSOR_RALLY:hint="Punto de reunion";break;
+                case CURSOR_ENTER:hint="Entrar";break;
+                case CURSOR_USE:hint="Usar";break;
+                case CURSOR_NO:hint="No se puede";break;
+            }
+        }
+        marks.hint(hint,fingerX,fingerY);
+    }
+    /**
+     * The game's interface keeps its pixel size at every resolution: build
+     * panel bottom-left, squads and minimap bottom-right, build column on the
+     * left edge. Measured at 1024x768 and expressed in game pixels.
+     */
+    private int zone(float x,float y){
+        int size=nativeDisplaySize(session);float w=Math.max(size>>>16,1),h=Math.max(size&0xffff,1);
+        if(size==0){w=1024;h=768;}
+        float px=x*w,py=y*h;
+        if(px>w-226&&py>h-256)return RtsTouchController.MINIMAP;
+        if(py>h-130&&(px<435||(px>w-538&&px<w-226)))return RtsTouchController.HUD;
+        if(px<82&&py>64&&py<h-96)return RtsTouchController.HUD;
+        return RtsTouchController.WORLD;
+    }
     private Button addTool(String label,String description,Runnable action){
         Button tool=button(label,action);tool.setTextSize(label.length()>1?13:19);tool.setPadding(0,0,0,0);tool.setAlpha(.8f);tool.setContentDescription(description);
         tool.setMinHeight(0);tool.setMinimumHeight(0);tool.setMinWidth(0);tool.setMinimumWidth(0);
-        LinearLayout.LayoutParams size=new LinearLayout.LayoutParams(dp(label.length()>1?52:44),dp(44));size.rightMargin=dp(6);tools.addView(tool,size);return tool;
+        LinearLayout.LayoutParams size=new LinearLayout.LayoutParams(dp(label.length()>1?48:40),dp(40));size.rightMargin=dp(4);tools.addView(tool,size);return tool;
     }
     /**
      * Squad slot N (the game has four): tap selects (N), a second quick tap
@@ -187,13 +274,34 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
             public void camera(int phase,float x,float y,float zoom,float vx,float vy){nativeCameraDrag(session,phase,x,y,zoom,vx,vy);}
             public void rotate(int direction){input.tapKey(direction>0?NEXT_DIR:PREV_DIR);}
             public void feedback(){game.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);}
-            public void rest(float x,float y){input.move(x,y);}
-        },game.getWidth(),game.getHeight(),getResources().getDisplayMetrics().density);
+            public void rest(float x,float y){input.restAt(x,y);}
+        },this::zone,game.getWidth(),game.getHeight(),getResources().getDisplayMetrics().density);
+        if(placing)touch.setPlacing(true);
     }
     private void cancelGesture(){handler.removeCallbacks(holdCheck);if(touch!=null)touch.cancel();}
+    /**
+     * A Bluetooth/USB mouse drives the game exactly like on PC: the pointer
+     * moves the cursor, buttons click, the wheel sets the camera height.
+     */
+    private boolean handleMouse(MotionEvent event){
+        float x=event.getX()/Math.max(game.getWidth(),1),y=event.getY()/Math.max(game.getHeight(),1);
+        switch(event.getActionMasked()){
+            case MotionEvent.ACTION_HOVER_MOVE:case MotionEvent.ACTION_MOVE:input.move(x,y);return true;
+            case MotionEvent.ACTION_BUTTON_PRESS:case MotionEvent.ACTION_BUTTON_RELEASE:{
+                int button=event.getActionButton()==MotionEvent.BUTTON_SECONDARY?1:event.getActionButton()==MotionEvent.BUTTON_TERTIARY?2:0;
+                input.button(x,y,button,event.getActionMasked()==MotionEvent.ACTION_BUTTON_PRESS);return true;}
+            case MotionEvent.ACTION_SCROLL:{
+                float v=event.getAxisValue(MotionEvent.AXIS_VSCROLL);if(v!=0)input.wheel(v>0?1:-1);return true;}
+        }
+        return true;
+    }
     private boolean handleTouch(MotionEvent event){
         if(touch==null)rebuildTouch();
+        if(event.isFromSource(InputDevice.SOURCE_MOUSE))return handleMouse(event);
         int action=event.getActionMasked(),count=event.getPointerCount();
+        fingerX=event.getX();fingerY=event.getY();
+        if(action==MotionEvent.ACTION_DOWN)touching=true;
+        else if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){touching=false;marks.hint(null,0,0);}
         if(count>2){touch.cancel();return true;}
         switch(action){
             case MotionEvent.ACTION_DOWN:touch.down(event.getX(),event.getY(),event.getEventTime());
@@ -259,7 +367,9 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
             "Mantener hasta que vibre y arrastrar: recuadro de seleccion.\n"+
             "Tocar con dos dedos o ✕: cancelar o deseleccionar.\n"+
             "Pellizcar: acercar o alejar.\n"+
-            "Girar dos dedos: rotar el edificio al colocarlo.\n"+
+            "Construir: elige el edificio; arrastra para moverlo (no lo tapa el dedo), gira con ⟲ ⟳ y confirma con ✓ Colocar.\n"+
+            "▭ Modo recuadro: con el activo, arrastrar un dedo selecciona un grupo.\n"+
+            "En la barra y el minimapa del juego: tocar pulsa, arrastrar desplaza, mantener es clic derecho (quitar de la cola).\n"+
             "+ : los toques se anaden a la seleccion (Mayus).\n"+
             "Todo: todas las unidades.  Tipo: las del mismo tipo.  ■ Detener  ⌂ Cuartel general  ⚑ Ultimo combate\n"+
             "1-4 pelotones: tocar selecciona, doble toque centra la camara, mantener asigna la seleccion (con + la anade).\n"+

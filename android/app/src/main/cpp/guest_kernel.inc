@@ -21,10 +21,13 @@ void resetInput();
 void resetRegistry();
 void resetAudio();
 void resetCamera();
+void resetCursorState();
+void updateCursorState();
 bool queryMappedMemory(uint32_t,uint32_t&,uint32_t&,uint64_t&,uint32_t&);
 
 // Per-call DirectX/DirectInput tracing floods logcat thousands of times per
 // frame; enable it with `adb shell setprop debug.amrts.trace 1`.
+const bool stateTrace=[]{char value[PROP_VALUE_MAX]{};__system_property_get("debug.amrts.states",value);return value[0]=='1';}();
 const bool traceCalls=[]{char value[PROP_VALUE_MAX]{};__system_property_get("debug.amrts.trace",value);return value[0]=='1';}();
 uint32_t kernelArg(uint32_t index) { return MEM32(g_esp + 4 + index * 4); }
 void kernelReturn(uint32_t value, uint32_t count) { g_eax = value; g_esp += 4 + count * 4; }
@@ -54,6 +57,7 @@ void resetKernel() {
     resetRegistry();
     resetAudio();
     resetCamera();
+    resetCursorState();
     if (activeInfo) {
         for (const auto& dll : activeInfo->importedLibraries) {
             std::string name = dll;
@@ -109,6 +113,7 @@ std::vector<uint16_t> wideString(uint32_t va) {
 #include "guest_registry.inc"
 #include "guest_audio.inc"
 #include "guest_camera.inc"
+#include "guest_cursor.inc"
 
 std::string moduleName(std::string name) {
     auto slash = name.find_last_of("/\\");

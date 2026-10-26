@@ -21,6 +21,7 @@
 #include <sys/syscall.h>
 #include <cerrno>
 #include <deque>
+#include <set>
 #include "guest_heap.h"
 #include "pe_version.h"
 #include "guest_cpu.h"

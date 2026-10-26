@@ -56,6 +56,13 @@ public final class GameInput {
         if(last!=null&&last.kind==MOTION){last.x+=dx;last.y+=dy;return;}
         Op op=new Op(MOTION);op.x=dx;op.y=dy;push(op);
     }
+    /**
+     * Park the cursor once the engine has consumed everything queued before.
+     * The engine resolves a release at the cursor position of the frame that
+     * reads it: moving in the same frame would, for example, drop a structure
+     * picked from a menu at the parking spot.
+     */
+    public void restAt(float x,float y){barrier();move(x,y);}
     public void wheel(int steps){Op op=new Op(WHEEL);op.button=steps;push(op);}
     public void key(int scan,boolean down){Op op=new Op(KEY);op.scan=scan;op.down=down;push(op);}
     public void tapKey(int scan){key(scan,true);barrier();key(scan,false);}

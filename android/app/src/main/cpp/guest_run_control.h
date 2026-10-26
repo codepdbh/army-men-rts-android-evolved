@@ -16,6 +16,10 @@ struct AndroidGuestInput {
 struct GuestRunControl {
     std::atomic<bool> stopped{false};
     std::atomic<uint32_t> frames{0};
+    // Kind of the engine cursor shown this frame (see guest_cursor.inc).
+    std::atomic<int32_t> cursorKind{0};
+    // Game resolution (width << 16 | height), for locating the interface.
+    std::atomic<uint32_t> displaySize{0};
     // Port-level Miles master volume 0..127; -1 follows the game's saved setting.
     std::atomic<int32_t> masterVolume{127};
     std::mutex mutex;

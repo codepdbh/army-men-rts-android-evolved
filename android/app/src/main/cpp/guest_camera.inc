@@ -17,7 +17,11 @@
 // Releasing with speed continues the virtual finger with exponential decay.
 extern "C" void sub_0056E7A0(void);
 extern "C" void sub_00542AB0(void);
-extern "C" void sub_004E07E0(void);// VarFloat::operator F32 (thiscall, result in ST(0))
+extern "C" void sub_004E07E0(void);
+extern "C" void sub_004E0740(void);// VarFloat::operator=(F32) (thiscall, ret 4)
+// camera.edgerate: touch has no hovering mouse, so edge scrolling only fires
+// when a tap rests near the border (HUD columns, minimap) and drifts the view.
+constexpr uint32_t cameraEdgeRateVar=0x0076F550;// VarFloat::operator F32 (thiscall, result in ST(0))
 constexpr uint32_t cameraMinHeightVar=0x0076F4D0,cameraMaxHeightVar=0x0076F4E0;
 constexpr uint32_t cameraSimulate=0x0056E7A0;
 const int cameraDebug=[]{char value[PROP_VALUE_MAX]{};__system_property_get("debug.amrts.camera",value);return std::atoi(value);}();
@@ -25,6 +29,10 @@ struct CameraVec {float x=0,y=0,z=0;};
 struct CameraPan {
     uint32_t serial=0;bool anchored=false,flinging=false,flingTaken=false;
     CameraVec anchor;float fingerX=0,fingerY=0,velocityX=0,velocityY=0,startHeight=0;
+    // One-finger drags use a constant screen-to-world map (Jacobian at the
+    // touch point, far rows clamped) so speed does not depend on where the
+    // finger is; two-finger drags keep the exact anchor for zooming.
+    bool linear=false,zoomed=false;float startTargetX=0,startTargetZ=0,startScreenX=0,startScreenY=0,jxx=0,jxz=0,jyx=0,jyz=0;
     std::chrono::steady_clock::time_point last;
 };
 uint32_t cameraObject=0,cameraScratch=0,projectionAddress=0;
@@ -80,6 +88,11 @@ float cameraVarFloat(uint32_t var,float fallback){
     return std::isfinite(value)?value:fallback;
 }
 
+void cameraVarSet(uint32_t var,float value){
+    MachineState state;g_ecx=var;g_esp-=4;std::memcpy(kernelPtr(g_esp,4,true),&value,4);g_esp-=4;write32(g_esp,RECOMP_RETADDR);
+    sub_004E0740();state.restore();
+}
+
 // Intersect the view ray through normalised screen point (sx, sy) with the
 // horizontal plane at `planeY`, from the rendered camera pose.
 bool cameraRay(uint32_t camera,float sx,float sy,float planeY,CameraVec& hit){
@@ -109,6 +122,14 @@ void applyCameraPan(uint32_t camera){
             }
             if(pan.anchored)pan.anchored=cameraRay(camera,drag.startX,drag.startY,plane,pan.anchor);
             pan.startHeight=cameraFloat(camera,0xf4);
+            // Far rows near the top map huge ground distances per pixel; use at
+            // most the scale of the row 30% down the screen.
+            float sy=std::max(drag.startY,0.3f);CameraVec p0,p1,p2;
+            if(pan.anchored&&cameraRay(camera,drag.startX,sy,plane,p0)&&cameraRay(camera,drag.startX+0.05f,sy,plane,p1)&&cameraRay(camera,drag.startX,sy+0.05f,plane,p2)){
+                pan.linear=true;pan.jxx=(p1.x-p0.x)/0.05f;pan.jxz=(p1.z-p0.z)/0.05f;pan.jyx=(p2.x-p0.x)/0.05f;pan.jyz=(p2.z-p0.z)/0.05f;
+                pan.startTargetX=cameraFloat(camera,0x1c0);pan.startTargetZ=cameraFloat(camera,0x1c8);
+                pan.startScreenX=drag.startX;pan.startScreenY=drag.startY;
+            }
         }
     }
     if(!pan.anchored)return;
@@ -116,6 +137,7 @@ void applyCameraPan(uint32_t camera){
     if(drag.active){
         pan.fingerX=drag.x;pan.fingerY=drag.y;
         if(drag.zoom!=1){
+            pan.zoomed=true;
             // Spreading the fingers lowers the camera, within the engine's limits.
             // Writing current and requested height skips the wheel easing; the
             // anchor loop below keeps the point between the fingers in place.
@@ -126,15 +148,23 @@ void applyCameraPan(uint32_t camera){
     }
     else if(!pan.flingTaken){
         pan.flingTaken=true;pan.fingerX=drag.x;pan.fingerY=drag.y;
-        if(std::hypot(drag.vx,drag.vy)>0.25f){pan.flinging=true;pan.velocityX=drag.vx;pan.velocityY=drag.vy;}
+        // Only a clear flick coasts; releasing after a slow drag stops dead.
+        if(std::hypot(drag.vx,drag.vy)>0.6f){pan.flinging=true;pan.velocityX=drag.vx;pan.velocityY=drag.vy;}
     }else if(pan.flinging){
         pan.fingerX+=pan.velocityX*dt;pan.fingerY+=pan.velocityY*dt;
         float decay=std::exp(-dt/0.325f);pan.velocityX*=decay;pan.velocityY*=decay;
         if(std::hypot(pan.velocityX,pan.velocityY)<0.04f)pan.flinging=false;
     }else{pan.anchored=false;return;}
-    CameraVec under;
-    if(!cameraRay(camera,pan.fingerX,pan.fingerY,pan.anchor.y,under)){pan.flinging=false;return;}
-    float dx=pan.anchor.x-under.x,dz=pan.anchor.z-under.z;
+    float dx,dz;
+    if(pan.linear&&!pan.zoomed){
+        float sx=pan.fingerX-pan.startScreenX,sy=pan.fingerY-pan.startScreenY;
+        float wantX=pan.startTargetX-(pan.jxx*sx+pan.jyx*sy),wantZ=pan.startTargetZ-(pan.jxz*sx+pan.jyz*sy);
+        dx=wantX-cameraFloat(camera,0x1c0);dz=wantZ-cameraFloat(camera,0x1c8);
+    }else{
+        CameraVec under;
+        if(!cameraRay(camera,pan.fingerX,pan.fingerY,pan.anchor.y,under)){pan.flinging=false;return;}
+        dx=pan.anchor.x-under.x;dz=pan.anchor.z-under.z;
+    }
     if(std::fabs(dx)<1e-4f&&std::fabs(dz)<1e-4f)return;
     // Clamp with the engine's map bounds; move the rendered pose by the same
     // amount so the view follows the finger without the ease-in delay.
@@ -163,6 +193,11 @@ void cameraSimulateHook(){
     if(camera!=cameraObject){__android_log_print(ANDROID_LOG_INFO,"AMRTS","Camera object %08x vtable %08x",camera,read32(camera));cameraObject=camera;cameraPan=CameraPan{};}
     if(cameraDebug){auto now=std::chrono::steady_clock::now();if(now-cameraDumpTime>std::chrono::seconds(2)){cameraDumpTime=now;dumpObject("Camera",camera,0x240);}}
     applyCameraPan(camera);
+    // Disable edge scrolling for this simulation step only, so the player's
+    // saved setting is left untouched.
+    float edgeRate=cameraVarFloat(cameraEdgeRateVar,0);
+    if(edgeRate!=0)cameraVarSet(cameraEdgeRateVar,0);
     sub_0056E7A0();
+    if(edgeRate!=0)cameraVarSet(cameraEdgeRateVar,edgeRate);
 }
 recomp_func_t manualLookup(uint32_t va){return va==cameraSimulate?cameraSimulateHook:nullptr;}

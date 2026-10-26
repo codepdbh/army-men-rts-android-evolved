@@ -124,6 +124,10 @@ Java_com_codepdbh_armymenrts_GameProbeActivity_nativeVolume(JNIEnv*,jclass,jlong
 extern "C" JNIEXPORT void JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeWheel(JNIEnv*,jclass,jlong id,jint steps){auto control=session(uint64_t(id));if(control)control->wheel(steps);}
 extern "C" JNIEXPORT jint JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeCursorKind(JNIEnv*,jclass,jlong id){auto control=session(uint64_t(id));return control?jint(control->cursorKind.load()):0;}
+extern "C" JNIEXPORT jint JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeDisplaySize(JNIEnv*,jclass,jlong id){auto control=session(uint64_t(id));return control?jint(control->displaySize.load()):0;}
+extern "C" JNIEXPORT jint JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeFrames(JNIEnv*,jclass,jlong id){auto control=session(uint64_t(id));return control?jint(control->frames.load()):0;}
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeVisualProbe(JNIEnv* env,jclass,jstring dataPath,jobject surface,jlong id){

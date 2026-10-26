@@ -158,6 +158,15 @@ void graphicsDraw(const std::shared_ptr<GraphicsOwner>& device,uint32_t primitiv
     }
     VulkanSurface* depth=nullptr;for(uint32_t child:target->attached)if(graphicsObjects.at(child).owner->description.caps[0]&0x20000){depth=graphicsObjects.at(child).owner->image.get();break;}
     if(traceCalls)__android_log_print(ANDROID_LOG_DEBUG,"AMRTS","Draw primitive=%u fvf=%08x vertices=%u indices=%u",primitive,fvf,count,uint32_t(indices.size()));
+    if(stateTrace){
+        // Log every distinct render-state combination once (debug.amrts.states 1).
+        auto format=[&](uint32_t stage){auto texture=device->textures.find(stage);if(texture==device->textures.end()||!texture->second)return std::string("-");
+            const auto& f=graphicsObjects.at(texture->second).owner->description.format;char text[64];std::snprintf(text,sizeof text,"%u:%x/%x/%x/%x",f.bits,f.r,f.g,f.b,f.a);return std::string(text);};
+        char key[320];std::snprintf(key,sizeof key,"blend=%u %u>%u atest=%u/%u/%u s0=%u(%u,%u)a%x s1=%u(%u,%u)a%x tex0=%s tex1=%s fvf=%x",
+            state.blend,state.sourceBlend,state.destinationBlend,state.alpha[0],state.alpha[1],state.alpha[2],
+            state.stages[0],state.stages[1],state.stages[2],state.stages[3],state.stages[4],state.stages[5],state.stages[6],state.stages[7],format(0).c_str(),format(1).c_str(),fvf);
+        static std::set<std::string> seen;if(seen.insert(key).second)__android_log_print(ANDROID_LOG_INFO,"AMRTS","DrawState %s",key);
+    }
     graphics->draw(*target->image,depth,textures[0],textures[1],vertices,indices,state);target->gpuWritten=true;
 }
 void graphicsMethod(){
@@ -206,7 +215,7 @@ void graphicsMethod(){
             uint32_t target=arg(1);if(!target){for(uint32_t child:owner->attached)if(graphicsObjects.at(child).owner->description.caps[0]&4){target=child;break;}}
             auto back=graphicsObjects.find(target);if(back==graphicsObjects.end()||back->second.kind!=GraphicsKind::Surface7){ret(0x80070057u,3);return;}
             auto& buffer=*back->second.owner;
-            graphics->present(*buffer.image);if(runControl)++runControl->frames;std::swap(owner->image,buffer.image);std::swap(owner->pixels,buffer.pixels);std::swap(owner->gpuWritten,buffer.gpuWritten);ret(0,3);return;
+            graphics->present(*buffer.image);updateCursorState();if(runControl)++runControl->frames;std::swap(owner->image,buffer.image);std::swap(owner->pixels,buffer.pixels);std::swap(owner->gpuWritten,buffer.gpuWritten);ret(0,3);return;
         }
         if(index==5){
             uint32_t flags=arg(4);if(flags&~0x01000400u)throw GuestStop("Surface Blt flags pending: 0x"+hex(flags));
