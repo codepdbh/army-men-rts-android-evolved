@@ -37,6 +37,8 @@ public:
     void setLoopCount(uint32_t handle,int32_t count);
     void setMasterVolume(int32_t volume);
     int32_t masterVolume();
+    // Silence the output without touching voice state (app in background).
+    void setPaused(bool paused);
     size_t voices();
 
     // Debug capture of the final mix (raw float stereo) for offline analysis.
@@ -50,6 +52,7 @@ private:
     std::map<uint32_t,std::unique_ptr<Voice>> voices_;
     uint32_t rate_;
     int32_t master_=127;
+    bool paused_=false;
     void* stream_=nullptr;
     bool restarting_=false;
     void* dump_=nullptr;

@@ -13,6 +13,52 @@ static void __android_log_print(int,const char*,const char* format,...){va_list 
 #include <vector>
 #include "shaders/fixed_spirv.h"
 
+#ifdef VK_NO_PROTOTYPES
+#include <dlfcn.h>
+#include <adrenotools/driver.h>
+PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr=nullptr;
+PFN_vkCreateInstance vkCreateInstance=nullptr;
+#define AMRTS_VK_DEFINE(name) PFN_##name name=nullptr;
+AMRTS_VK_INSTANCE_FUNCTIONS(AMRTS_VK_DEFINE)
+#undef AMRTS_VK_DEFINE
+namespace {
+std::string driverDir,driverName,hookDir,tmpDir,loadedDriver;
+void* vulkanLibrary=nullptr;
+// Opens the system libvulkan, or a private one whose HAL load adrenotools
+// redirects to the imported driver. Kept for the life of the process.
+bool openVulkan(bool custom){
+    void* library=nullptr;
+    if(custom){
+        library=adrenotools_open_libvulkan(RTLD_NOW|RTLD_LOCAL,ADRENOTOOLS_DRIVER_CUSTOM,tmpDir.c_str(),hookDir.c_str(),
+            driverDir.c_str(),driverName.c_str(),nullptr,nullptr);
+        if(!library){__android_log_print(ANDROID_LOG_INFO,"AMRTS","Custom driver %s could not be opened",driverName.c_str());return false;}
+    }else library=dlopen("libvulkan.so",RTLD_NOW|RTLD_LOCAL);
+    if(!library)return false;
+    auto proc=reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(library,"vkGetInstanceProcAddr"));
+    if(!proc)return false;
+    vulkanLibrary=library;vkGetInstanceProcAddr=proc;
+    vkCreateInstance=reinterpret_cast<PFN_vkCreateInstance>(proc(VK_NULL_HANDLE,"vkCreateInstance"));
+    loadedDriver=custom?driverName:"system";
+    return vkCreateInstance!=nullptr;
+}
+void loadInstanceFunctions(VkInstance instance){
+#define AMRTS_VK_LOAD(name) name=reinterpret_cast<PFN_##name>(vkGetInstanceProcAddr(instance,#name));
+    AMRTS_VK_INSTANCE_FUNCTIONS(AMRTS_VK_LOAD)
+#undef AMRTS_VK_LOAD
+}
+}
+void selectVulkanDriver(const std::string& dir,const std::string& name,const std::string& hooks,const std::string& tmp){
+    driverDir=dir;driverName=name;hookDir=hooks;tmpDir=tmp;
+    if(!driverDir.empty()&&driverDir.back()!='/')driverDir+='/';
+    if(!hookDir.empty()&&hookDir.back()!='/')hookDir+='/';
+}
+std::string loadedVulkanDriver(){return loadedDriver;}
+#else
+namespace {bool openVulkan(bool){return true;}void loadInstanceFunctions(VkInstance){}std::string driverName;}
+void selectVulkanDriver(const std::string&,const std::string&,const std::string&,const std::string&){}
+std::string loadedVulkanDriver(){return "system";}
+#endif
+
 namespace {
 void check(VkResult result,const char* operation) {
     if(result!=VK_SUCCESS)throw std::runtime_error(std::string(operation)+" failed: Vulkan "+std::to_string(result));
@@ -78,6 +124,34 @@ std::shared_ptr<VulkanSurface> VulkanRenderer::createSurface(uint32_t width,uint
 
 void VulkanRenderer::initialize(bool createDevice) {
     if(!instance_){
+        // An imported driver that fails to start falls back to the system one.
+        bool custom=!driverName.empty();
+        if(custom&&!openVulkan(true))custom=false;
+        if(!custom&&!openVulkan(false))throw std::runtime_error("Vulkan library unavailable");
+        try{createInstance();createDeviceObjects(createDevice);}
+        catch(const std::exception& error){
+            if(!custom)throw;
+            __android_log_print(ANDROID_LOG_INFO,"AMRTS","Custom driver failed (%s), using the system driver",error.what());
+            if(device_){
+                vkDeviceWaitIdle(device_);
+                if(pipelineCache_)vkDestroyPipelineCache(device_,pipelineCache_,nullptr);
+                if(pool_)vkDestroyCommandPool(device_,pool_,nullptr);
+                vkDestroyDevice(device_,nullptr);
+            }
+            if(instance_)vkDestroyInstance(instance_,nullptr);
+            device_=VK_NULL_HANDLE;queue_=VK_NULL_HANDLE;pool_=VK_NULL_HANDLE;pipelineCache_=VK_NULL_HANDLE;
+            instance_=VK_NULL_HANDLE;physical_=VK_NULL_HANDLE;info_={};
+            if(!openVulkan(false))throw;
+#ifdef VK_NO_PROTOTYPES
+            loadedDriver="system (fallo "+driverName+")";
+#endif
+            createInstance();
+        }
+    }
+    createDeviceObjects(createDevice);
+}
+void VulkanRenderer::createInstance(){
+    {
         VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         application.pApplicationName="Army Men RTS Android Evolved";application.applicationVersion=VK_MAKE_VERSION(0,2,0);
         application.pEngineName="Android Evolved";application.engineVersion=1;application.apiVersion=VK_API_VERSION_1_1;
@@ -88,6 +162,7 @@ void VulkanRenderer::initialize(bool createDevice) {
         instanceInfo.enabledExtensionCount=2;instanceInfo.ppEnabledExtensionNames=extensions;
 #endif
         check(vkCreateInstance(&instanceInfo,nullptr,&instance_),"Vulkan 1.1 instance creation");
+        loadInstanceFunctions(instance_);
         uint32_t count=0;check(vkEnumeratePhysicalDevices(instance_,&count,nullptr),"Physical GPU count");
         std::vector<VkPhysicalDevice> devices(count);
         check(vkEnumeratePhysicalDevices(instance_,&count,devices.data()),"Physical GPU enumeration");
@@ -107,7 +182,19 @@ void VulkanRenderer::initialize(bool createDevice) {
         vkGetPhysicalDeviceMemoryProperties(physical_,&memory_);
         for(uint32_t i=0;i<memory_.memoryHeapCount;++i)if(memory_.memoryHeaps[i].flags&VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
             info_.deviceMemory+=memory_.memoryHeaps[i].size;
+        // Driver identity (Vulkan 1.2 driver properties) for the launcher/logs.
+        info_.driver=loadedVulkanDriver();
+        if(info_.apiVersion>=VK_API_VERSION_1_2){
+            auto properties2=reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(vkGetInstanceProcAddr(instance_,"vkGetPhysicalDeviceProperties2"));
+            if(properties2){
+                VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+                VkPhysicalDeviceProperties2 all{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};all.pNext=&driver;properties2(physical_,&all);
+                info_.driver=std::string(driver.driverName)+" "+driver.driverInfo+" ["+info_.driver+"]";
+            }
+        }
     }
+}
+void VulkanRenderer::createDeviceObjects(bool createDevice){
     if(!createDevice||device_)return;
     float priority=1.0f;
     VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -125,8 +212,8 @@ void VulkanRenderer::initialize(bool createDevice) {
     check(vkCreateCommandPool(device_,&poolInfo,nullptr,&pool_),"Vulkan command pool creation");
     VkPipelineCacheCreateInfo cache{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     check(vkCreatePipelineCache(device_,&cache,nullptr,&pipelineCache_),"Vulkan pipeline cache");
-    __android_log_print(ANDROID_LOG_INFO,"AMRTS","Vulkan 1.1 backend: %s (GPU API %u.%u)",info_.name.c_str(),
-        VK_API_VERSION_MAJOR(info_.apiVersion),VK_API_VERSION_MINOR(info_.apiVersion));
+    __android_log_print(ANDROID_LOG_INFO,"AMRTS","Vulkan 1.1 backend: %s (GPU API %u.%u) driver %s",info_.name.c_str(),
+        VK_API_VERSION_MAJOR(info_.apiVersion),VK_API_VERSION_MINOR(info_.apiVersion),info_.driver.c_str());
 }
 
 uint32_t VulkanRenderer::memoryType(uint32_t bits,VkMemoryPropertyFlags required,VkMemoryPropertyFlags preferred)const{
@@ -235,8 +322,15 @@ void VulkanRenderer::testClearReadback() {
     __android_log_print(ANDROID_LOG_INFO,"AMRTS","Vulkan 1.1 offscreen clear/readback passed: %ux%u RGBA",width,height);
 }
 
+void VulkanRenderer::releaseWindow(){
+    if(device_)vkDeviceWaitIdle(device_);
+    if(swapchain_)vkDestroySwapchainKHR(device_,swapchain_,nullptr);
+    if(display_)vkDestroySurfaceKHR(instance_,display_,nullptr);
+    swapchain_=VK_NULL_HANDLE;display_=VK_NULL_HANDLE;displayImages_.clear();
+}
 void VulkanRenderer::setWindow(ANativeWindow* window){
 #ifdef __ANDROID__
+    releaseWindow();
     if(!window)return;
     VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};info.window=window;
     check(vkCreateAndroidSurfaceKHR(instance_,&info,nullptr,&display_),"Android Vulkan surface");
@@ -276,7 +370,8 @@ void VulkanRenderer::present(VulkanSurface& surface){
     if(surface.depth||surface.layout==VK_IMAGE_LAYOUT_UNDEFINED)throw std::runtime_error("Invalid display source");
     TestResources resources{device_,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,pool_};
     VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};check(vkCreateFence(device_,&fence,nullptr,&resources.fence),"Acquire fence");
-    uint32_t imageIndex=0;VkResult acquired=vkAcquireNextImageKHR(device_,swapchain_,2000000000ULL,VK_NULL_HANDLE,resources.fence,&imageIndex);if(acquired!=VK_SUBOPTIMAL_KHR)check(acquired,"Display acquisition");
+    uint32_t imageIndex=0;VkResult acquired=vkAcquireNextImageKHR(device_,swapchain_,2000000000ULL,VK_NULL_HANDLE,resources.fence,&imageIndex);if(acquired==VK_ERROR_OUT_OF_DATE_KHR||acquired==VK_ERROR_SURFACE_LOST_KHR){releaseWindow();return;}
+    if(acquired!=VK_SUBOPTIMAL_KHR)check(acquired,"Display acquisition");
     check(vkWaitForFences(device_,1,&resources.fence,VK_TRUE,2000000000ULL),"Display acquisition wait");
     check(vkResetFences(device_,1,&resources.fence),"Display fence reset");
     VkCommandBufferAllocateInfo commands{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};commands.commandPool=pool_;commands.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;commands.commandBufferCount=1;
@@ -301,7 +396,8 @@ void VulkanRenderer::present(VulkanSurface& surface){
     check(vkQueueSubmit(queue_,1,&submit,resources.fence),"Present submission");
     check(vkWaitForFences(device_,1,&resources.fence,VK_TRUE,2000000000ULL),"Present render wait");
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};present.swapchainCount=1;present.pSwapchains=&swapchain_;present.pImageIndices=&imageIndex;
-    VkResult presented=vkQueuePresentKHR(queue_,&present);if(presented!=VK_SUBOPTIMAL_KHR)check(presented,"Android presentation");check(vkQueueWaitIdle(queue_),"Android present wait");
+    VkResult presented=vkQueuePresentKHR(queue_,&present);if(presented==VK_ERROR_OUT_OF_DATE_KHR||presented==VK_ERROR_SURFACE_LOST_KHR){vkQueueWaitIdle(queue_);releaseWindow();return;}
+    if(presented!=VK_SUBOPTIMAL_KHR)check(presented,"Android presentation");check(vkQueueWaitIdle(queue_),"Android present wait");
 }
 
 void VulkanRenderer::clearSurface(VulkanSurface& surface,uint32_t argb,float depth){

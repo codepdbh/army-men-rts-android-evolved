@@ -138,12 +138,14 @@ void AudioMixer::setPan(uint32_t handle,int32_t pan){AUDIO_VOICE(handle)return;f
 void AudioMixer::setLoopCount(uint32_t handle,int32_t count){AUDIO_VOICE(handle)return;found->second->loops=found->second->loopsLeft=std::max(count,0);}
 #undef AUDIO_VOICE
 void AudioMixer::setMasterVolume(int32_t volume){std::lock_guard<std::mutex> lock(mutex_);master_=std::clamp(volume,0,127);}
+void AudioMixer::setPaused(bool paused){std::lock_guard<std::mutex> lock(mutex_);paused_=paused;}
 int32_t AudioMixer::masterVolume(){std::lock_guard<std::mutex> lock(mutex_);return master_;}
 size_t AudioMixer::voices(){std::lock_guard<std::mutex> lock(mutex_);return voices_.size();}
 
 void AudioMixer::render(float* output,uint32_t frames){
     std::fill(output,output+size_t(frames)*2,0.0f);
     std::lock_guard<std::mutex> lock(mutex_);
+    if(paused_)return;
     for(auto& item:voices_){
         auto& v=*item.second;if(v.status!=Playing)continue;
         float gain=(v.volume/127.0f)*(master_/127.0f);

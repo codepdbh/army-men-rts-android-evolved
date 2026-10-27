@@ -96,6 +96,7 @@ void pumpAndroidInput(){
 void inputMethod(){
     uint32_t index=(inputToken&0xffff)/16;auto found=inputObjects.find(arg(0));
     if(found==inputObjects.end())throw GuestStop("Invalid DirectInput object");auto& object=found->second;
+    if(runControl&&object.type==2&&(index==9||index==10)&&object.acquired)++runControl->inputPolls;
     if(traceCalls&&index!=9&&index!=10&&index!=25)__android_log_print(ANDROID_LOG_DEBUG,"AMRTS","Input type=%u method=%u caller=%08x",object.type,index,g_cur_func);
     if(index==0){bool supported=guidEquals(arg(1),iidUnknown)||guidEquals(arg(1),object.type?inputDeviceIid:inputIid);write32(arg(2),supported?arg(0):0);if(supported)++object.references;ret(supported?0:0x80004002u,3);return;}
     if(index==1){ret(++object.references,1);return;}
@@ -185,6 +186,18 @@ uint8_t virtualKeyState(uint32_t key){
     if(key==1)return inputButtons[0];if(key==2)return inputButtons[1];if(key==4)return inputButtons[2];
     uint8_t value=0;for(uint32_t scan=0;scan<256;++scan)if(scanToVirtual(scan)==key)value|=inputKeyboard[scan];return value;
 }
+// Character of a virtual key on a US layout (ToAscii and TranslateMessage).
+uint16_t virtualToChar(uint32_t key,bool shift,bool caps){
+    if(key>='A'&&key<='Z')return (shift!=caps)?key:key+32;
+    if(key>='0'&&key<='9'){const char shifted[]=")!@#$%^&*(";return shift?shifted[key-'0']:key;}
+    if(key==32||key==13||key==9||key==8||key==27)return key;
+    const char* plain=nullptr;const char* upper=nullptr;
+    switch(key){case 186:plain=";";upper=":";break;case 187:plain="=";upper="+";break;case 188:plain=",";upper="<";break;
+        case 189:plain="-";upper="_";break;case 190:plain=".";upper=">";break;case 191:plain="/";upper="?";break;
+        case 192:plain="`";upper="~";break;case 219:plain="[";upper="{";break;case 220:plain="\\";upper="|";break;
+        case 221:plain="]";upper="}";break;case 222:plain="'";upper="\"";break;}
+    return plain?uint16_t(uint8_t((shift?upper:plain)[0])):0;
+}
 bool inputDispatch(const std::string& name){
     if(name=="GetKeyboardState"){
         auto* output=static_cast<uint8_t*>(kernelPtr(arg(0),256,true));for(uint32_t key=0;key<256;++key)output[key]=virtualKeyState(key);ret(1,1);return true;
@@ -197,10 +210,7 @@ bool inputDispatch(const std::string& name){
     }
     if(name=="ToAscii"){
         uint32_t key=arg(0),state=arg(2);auto* keys=static_cast<const uint8_t*>(kernelPtr(state,256));uint16_t character=0;
-        bool shift=keys[16]&128,caps=keys[20]&1;
-        if(key>='A'&&key<='Z')character=(shift!=caps)?key:key+32;
-        else if(key>='0'&&key<='9'){const char shifted[]=")!@#$%^&*(";character=shift?shifted[key-'0']:key;}
-        else if(key==32||key==13||key==9||key==8)character=key;
+        character=virtualToChar(key,keys[16]&128,keys[20]&1);
         if(character)std::memcpy(kernelPtr(arg(3),2,true),&character,2);ret(character?1:0,5);return true;
     }
     if(name!="DirectInputCreateEx")return false;

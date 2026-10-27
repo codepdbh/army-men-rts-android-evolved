@@ -89,7 +89,7 @@ void setForegroundWindow(){uint32_t handle=arg(0);if(!windows.count(handle)){las
 struct GuestMessage {uint32_t hwnd,message,wparam,lparam,time;int32_t x=0,y=0;};
 std::mutex messageMutex;
 std::deque<GuestMessage> windowMessages;
-uint32_t messageTime(){return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
+uint32_t messageTime(){return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(guestClock()).count());}
 void enqueueGuestKey(unsigned scan,bool down){
     uint32_t key=0;
     switch(scan){case 1:key=0x1b;break;case 0xe:key=8;break;case 0x1c:key=13;break;case 0xf:key=9;break;case 0x39:key=32;break;case 0x2a:key=16;break;case 0x1d:key=17;break;case 0x38:key=18;break;
@@ -120,12 +120,13 @@ void getMessage(){
     ret(read32(arg(0)+4)==0x12?0:1,4);
 }
 void dispatchMessage(){uint32_t message=arg(0);if(!message){ret(0,1);return;}ret(windowMessage(read32(message),read32(message+4),read32(message+8),read32(message+12)),1);}
+uint8_t virtualKeyState(uint32_t key);
+uint16_t virtualToChar(uint32_t key,bool shift,bool caps);
 void translateMessage(){
     uint32_t address=arg(0);if(!address){ret(0,1);return;}uint32_t type=read32(address+4),key=read32(address+8);
     if(type!=0x100&&type!=0x104){ret(0,1);return;}
-    if((key>='A'&&key<='Z')||(key>='0'&&key<='9')||key==13||key==9||key==32||key==8){
-        if(key>='A'&&key<='Z')key+='a'-'A';
-        std::lock_guard<std::mutex> lock(messageMutex);windowMessages.push_back({read32(address),0x102,key,read32(address+12),messageTime()});
+    if(uint32_t character=virtualToChar(key,virtualKeyState(16)&128,false)){
+        std::lock_guard<std::mutex> lock(messageMutex);windowMessages.push_back({read32(address),0x102,character,read32(address+12),messageTime()});
     }
     ret(1,1);
 }

@@ -30,7 +30,7 @@ bool timerDispatch(const std::string& name) {
         std::memcpy(kernelPtr(arg(1), 8, true), &ticks, 8); ret(1, 2); return true;
     }
     if (name == "timeGetTime" || name == "GetTickCount") {
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(guestClock()).count();
         ret(uint32_t(ms), 0); return true;
     }
     if (name == "timeGetDevCaps") {
@@ -51,10 +51,11 @@ bool timerDispatch(const std::string& name) {
     }
     if (name == "Sleep") {
         uint32_t ms = arg(0);
-        if (ms == UINT32_MAX) throw GuestStop("Infinite Sleep requires guest scheduler");
+        if (ms == UINT32_MAX && !otherThreadsRunnable()) throw GuestStop("Infinite Sleep with no other guest thread");
+        // Sleep without holding the machine so other guest threads can run.
         while (ms) { progressCheck(); uint32_t chunk = std::min(ms, 10u);
-            std::this_thread::sleep_for(std::chrono::milliseconds(chunk)); ms -= chunk; }
-        if (!arg(0)) std::this_thread::yield(); ret(0, 1); return true;
+            machineYield(chunk); if (ms != UINT32_MAX) ms -= chunk; }
+        if (!arg(0)) machineYield(0); ret(0, 1); return true;
     }
     return false;
 }

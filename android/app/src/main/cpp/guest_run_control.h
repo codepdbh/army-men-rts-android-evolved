@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <condition_variable>
 #include <algorithm>
 #include <cmath>
 
@@ -13,9 +14,12 @@ struct AndroidGuestInput {
     uint32_t code=0;
     bool down=false;
 };
+struct ANativeWindow;
 struct GuestRunControl {
     std::atomic<bool> stopped{false};
     std::atomic<uint32_t> frames{0};
+    // Mouse reads by the engine (GetDeviceState/GetDeviceData): input pacing.
+    std::atomic<uint32_t> inputPolls{0};
     // Kind of the engine cursor shown this frame (see guest_cursor.inc).
     std::atomic<int32_t> cursorKind{0};
     // Game resolution (width << 16 | height), for locating the interface.
@@ -24,6 +28,18 @@ struct GuestRunControl {
     std::atomic<int32_t> masterVolume{127};
     std::mutex mutex;
     std::deque<AndroidGuestInput> pending;
+    // App in background: the game thread parks in progressCheck (clock frozen,
+    // audio silent) instead of the session being closed.
+    std::atomic<bool> paused{false};
+    // Android window hand-over. The UI thread posts a new window (null when the
+    // surface is destroyed) and waits until the game thread, which owns the
+    // renderer, has swapped it. Both pointers hold a window reference.
+    std::mutex windowMutex;
+    std::condition_variable windowSwapped;
+    std::atomic<bool> windowPending{false};
+    ANativeWindow* requestedWindow=nullptr;
+    ANativeWindow* shownWindow=nullptr;
+    uint64_t windowRequests=0,windowServed=0;
     // Direct camera drag (normalised screen coordinates). `serial` changes on
     // every new gesture; on release the velocity (screen units/s) drives inertia.
     // `began` survives the release so a flick shorter than one game frame is still applied.

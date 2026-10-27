@@ -9,12 +9,12 @@ std::unordered_map<std::string, std::weak_ptr<SyncObject>> namedSync;
 uint32_t nextSyncHandle = 0x72000000;
 void resetSync() { syncHandles.clear(); namedSync.clear(); nextSyncHandle = 0x72000000; }
 bool syncReady(const SyncObject& object) {
-    if (object.kind == SyncKind::Mutex) return !object.owner || object.owner == 1;
+    if (object.kind == SyncKind::Mutex) return !object.owner || object.owner == currentThreadId();
     if (object.kind == SyncKind::Event) return object.signaled;
     return object.count > 0;
 }
 void syncAcquire(SyncObject& object) {
-    if (object.kind == SyncKind::Mutex) { object.owner = 1; ++object.depth; }
+    if (object.kind == SyncKind::Mutex) { object.owner = currentThreadId(); ++object.depth; }
     else if (object.kind == SyncKind::Event) { if (!object.manual) object.signaled = false; }
     else --object.count;
 }
@@ -37,7 +37,7 @@ bool syncDispatch(const std::string& name) {
                 kernelError(87); ret(0, 4); return true;
             }
             object = std::make_shared<SyncObject>(); object->kind = kind;
-            if (kind == SyncKind::Mutex && arg(1)) { object->owner = 1; object->depth = 1; }
+            if (kind == SyncKind::Mutex && arg(1)) { object->owner = currentThreadId(); object->depth = 1; }
             if (kind == SyncKind::Event) { object->manual = arg(1) != 0; object->signaled = arg(2) != 0; }
             if (kind == SyncKind::Semaphore) { object->count = arg(1); object->maximum = arg(2); }
             if (!objectName.empty()) namedSync[objectName] = object;
@@ -52,7 +52,7 @@ bool syncDispatch(const std::string& name) {
         if (found == syncHandles.end()) { kernelError(6); ret(0, count); return true; }
         auto& object = *found->second;
         if (name == "ReleaseMutex" && object.kind == SyncKind::Mutex) {
-            if (object.owner != 1 || !object.depth) { kernelError(288); ret(0, 1); }
+            if (object.owner != currentThreadId() || !object.depth) { kernelError(288); ret(0, 1); }
             else { if (!--object.depth) object.owner = 0; ret(1, 1); }
         } else if (name == "ReleaseSemaphore" && object.kind == SyncKind::Semaphore) {
             if (!arg(1) || arg(1) > object.maximum - object.count) { kernelError(298); ret(0, 3); }
@@ -92,8 +92,10 @@ bool syncDispatch(const std::string& name) {
             if (!timeout || (timeout != UINT32_MAX && std::chrono::steady_clock::now() >= waitEnd)) {
                 ret(258, multiple ? 4 : 2); return true;
             }
-            if (timeout == UINT32_MAX) throw GuestStop("Blocking synchronization requires guest thread scheduler");
-            progressCheck(); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // Another guest thread must signal: hand it the machine.
+            if (timeout == UINT32_MAX && !otherThreadsRunnable() && !runControl)
+                throw GuestStop("Blocking wait with no other guest thread");
+            progressCheck(); machineYield(1);
         }
     }
     if (name == "CloseHandle") {

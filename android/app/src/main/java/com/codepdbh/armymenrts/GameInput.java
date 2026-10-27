@@ -80,8 +80,9 @@ public final class GameInput {
             if(op.kind==BARRIER){
                 int frame=target.frames();
                 if(barrierFrame<0){barrierFrame=frame;barrierStart=now;}
-                // Two presents guarantee one complete engine input poll in between.
-                if(frame<barrierFrame+2&&now-barrierStart<BARRIER_TIMEOUT_MS)return;
+                // frames() counts the engine's mouse reads: one more read means
+                // everything sent before the barrier has been seen, at any FPS.
+                if(frame<barrierFrame+1&&now-barrierStart<BARRIER_TIMEOUT_MS)return;
                 barrierFrame=-1;queue.pollFirst();continue;
             }
             queue.pollFirst();

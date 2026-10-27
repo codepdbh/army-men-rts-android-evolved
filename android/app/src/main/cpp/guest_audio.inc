@@ -8,6 +8,7 @@ std::vector<uint32_t> audioSamples;
 int32_t gameMasterVolume=127,appliedMasterVolume=-1;
 constexpr uint32_t audioSampleLimit=64;
 void resetAudio(){audio.reset();audioDriver=0;audioSamples.clear();gameMasterVolume=127;appliedMasterVolume=-1;}
+void pauseGuestAudio(bool paused){if(audio)audio->setPaused(paused);}
 void applyMasterVolume(){
     if(!audio)return;int32_t port=runControl?runControl->masterVolume.load():-1,volume=port>=0?port:gameMasterVolume;
     if(volume!=appliedMasterVolume){audio->setMasterVolume(volume);appliedMasterVolume=volume;
@@ -28,7 +29,7 @@ bool audioDispatch(const std::string& name){
     if(name=="_AIL_set_redist_directory@4"){ret(0,1);return true;}
     if(name=="_AIL_startup@0"){ret(1,0);return true;}
     if(name=="_AIL_shutdown@0"){resetAudio();ret(0,0);return true;}
-    if(name=="_AIL_ms_count@0"){ret(uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()),0);return true;}
+    if(name=="_AIL_ms_count@0"){ret(uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(guestClock()).count()),0);return true;}
     if(name=="_AIL_last_error@0"){
         ret(audioText("Android audio output unavailable"),0);return true;
     }

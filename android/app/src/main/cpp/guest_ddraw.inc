@@ -2,6 +2,20 @@ std::unique_ptr<VulkanRenderer> graphics;
 uint32_t graphicsDescription=0,graphicsDriverName=0;
 void resetGraphicsObjects();
 void resetGraphics() { if(graphics)graphics->flushDraws();resetGraphicsObjects();graphics.reset();graphicsDescription=graphicsDriverName=0; }
+// Runs on the machine holder (progressCheck): swap the Android window the
+// UI thread posted, then wake it. A failed swapchain leaves the game headless.
+void serviceAndroidWindow(){
+    if(!runControl||!runControl->windowPending.load())return;
+    std::lock_guard<std::mutex> lock(runControl->windowMutex);
+    ANativeWindow* next=runControl->requestedWindow;runControl->requestedWindow=nullptr;
+    try{if(graphics)graphics->setWindow(next);}
+    catch(const std::exception& error){__android_log_print(ANDROID_LOG_ERROR,"AMRTS","Window swap failed: %s",error.what());if(graphics)graphics->releaseWindow();}
+    if(runControl->shownWindow)ANativeWindow_release(runControl->shownWindow);
+    runControl->shownWindow=next;presentationWindow=next;
+    __android_log_print(ANDROID_LOG_INFO,"AMRTS","Android window %s",next?"attached":"detached");
+    runControl->windowServed=runControl->windowRequests;runControl->windowPending=false;
+    runControl->windowSwapped.notify_all();
+}
 void initializeGraphics() {
     if(graphics)return;
     auto renderer=std::make_unique<VulkanRenderer>();renderer->initialize();renderer->testClearReadback();renderer->testTriangleReadback();

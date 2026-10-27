@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 project(ArmyMenRTSAndroid C CXX)
 add_library(armymen_rts_android SHARED bootstrap.cpp pe_image.cpp pe_version.cpp vulkan_renderer.cpp audio_mixer.cpp)
-target_compile_definitions(armymen_rts_android PRIVATE VK_USE_PLATFORM_ANDROID_KHR)
+target_compile_definitions(armymen_rts_android PRIVATE VK_USE_PLATFORM_ANDROID_KHR VK_NO_PROTOTYPES)
+# Custom Vulkan drivers (Turnip, Mali, Xclipse...) are injected into a private
+# libvulkan by libadrenotools; its hook libraries ship next to ours.
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../../../third_party/libadrenotools" adrenotools)
 target_compile_features(armymen_rts_android PRIVATE cxx_std_17)
 target_compile_options(armymen_rts_android PRIVATE -O2 -fno-strict-aliasing -ffp-contract=off)
-target_link_libraries(armymen_rts_android PRIVATE android log vulkan aaudio)
+target_link_libraries(armymen_rts_android PRIVATE android log adrenotools dl aaudio)
 
 # The minimal diagnostic APK builds without local game-derived sources.
 # The linked variant runs a bounded guest boot probe through the Win32 HLE.

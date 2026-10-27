@@ -22,9 +22,11 @@
 | Interfaces DirectDraw/Direct3D 7 | Enumeración, referencias COM y consultas iniciales de capacidades; creación de superficies pendiente |
 | Audio | Miles Sound System sobre AAudio: efectos WAV y música/voces MP3 (minimp3, dominio público), con volumen general propio del port |
 | Controles táctiles | Esquema RTS completo a partir de los atajos del juego; ver [controles](docs/TOUCH_CONTROLS.md) |
+| Multijugador LAN | Hilos cooperativos del juego y Winsock sobre sockets Android; partida entre dos teléfonos en la misma WiFi comprobada |
+| Drivers gráficos personalizados | Experimental: importación de drivers Vulkan (Turnip, Mali, Xclipse) con [libadrenotools](https://github.com/bylaws/libadrenotools); vuelve al driver del sistema si el importado falla |
 | Vídeos Bink y campaña completa | Pendiente |
 
-El APK local ejecuta el inicio del juego mediante el c?digo ARM64 generado. La prueba ADB permanece limitada a 30 segundos. El bot?n **Iniciar (experimental)** usa una ruta continua, con presentaci?n horizontal Android y entrada t?ctil, probada en el S25 Ultra. Al salir de la pantalla o cambiar de aplicaci?n se detiene la sesi?n; volver inicia el juego desde cero, a?n sin reanudar una partida. **Es un prototipo con la primera misi?n ejecutada**, no una campa?a completa validada: siguen pendientes llamadas del motor y v?deos. El renderizador traduce DirectDraw/Direct3D 7 sobre Vulkan 1.1, distinto del puente Direct3D 9 de [NFSU2 Android Evolved](https://github.com/codepdbh/nfsu2-recompiled).
+El APK local ejecuta el inicio del juego mediante el c?digo ARM64 generado. La prueba ADB permanece limitada a 30 segundos. El bot?n **Iniciar (experimental)** usa una ruta continua, con presentaci?n horizontal Android y entrada t?ctil, probada en el S25 Ultra. Al cambiar de aplicación la partida queda en pausa (audio y reloj del juego detenidos) y continúa al volver. **Es un prototipo con la primera misi?n ejecutada**, no una campa?a completa validada: siguen pendientes llamadas del motor y v?deos. El renderizador traduce DirectDraw/Direct3D 7 sobre Vulkan 1.1, distinto del puente Direct3D 9 de [NFSU2 Android Evolved](https://github.com/codepdbh/nfsu2-recompiled).
 
 ## Controles t?ctiles
 
@@ -51,6 +53,8 @@ El script copia el ejecutable, los paquetes `.x` y `.x-s`, las bibliotecas origi
 ## Compilar
 
 Requisitos: JDK 17 o 21, Android SDK 35, NDK 28.2.13676358 y CMake 3.30.5. El objetivo actual es Android 10 o posterior y ARM64.
+
+libadrenotools es un submódulo: clona con `git clone --recursive` o ejecuta `git submodule update --init --recursive`.
 
 ```powershell
 cd android

@@ -22,6 +22,11 @@ void resetRegistry();
 void resetAudio();
 void resetCamera();
 void resetCursorState();
+void resetWinsock();
+uint32_t currentThreadId();
+bool otherThreadsRunnable();
+void stopGuestThreads();
+void startGuestThreads();
 void updateCursorState();
 bool queryMappedMemory(uint32_t,uint32_t&,uint32_t&,uint64_t&,uint32_t&);
 
@@ -38,7 +43,8 @@ void* kernelPtr(uint32_t va, uint64_t bytes, bool write = false) {
         throw std::runtime_error("Win32 pointer outside committed memory: 0x" + addressText(va));
     return activeImage->address(va, bytes);
 }
-void kernelError(uint32_t value) { lastError = value; MEM32(kTibBase + 0x34) = value; }
+// Last error lives in the running thread's TIB (fs:[0x34]), as on Windows.
+void kernelError(uint32_t value) { lastError = value; MEM32((g_fs_base ? g_fs_base : kTibBase) + 0x34) = value; }
 void resetKernel() {
     lastError = exceptionFilter = environmentA = environmentW = 0;
     virtualThreadPriority = 0; virtualProcessPriority = 0x20;
@@ -60,6 +66,7 @@ void resetKernel() {
     resetAudio();
     resetCamera();
     resetCursorState();
+    resetWinsock();
     if (activeInfo) {
         for (const auto& dll : activeInfo->importedLibraries) {
             std::string name = dll;
@@ -68,6 +75,8 @@ void resetKernel() {
         }
         modules.emplace("ddraw.dll", 0x71000000u + uint32_t(modules.size()) * 0x10000);
         modules.emplace("dinput.dll", 0x71000000u + uint32_t(modules.size()) * 0x10000);
+        // StyxNet loads Winsock dynamically (multiplayer).
+        modules.emplace("ws2_32.dll", 0x71000000u + uint32_t(modules.size()) * 0x10000);
     }
 }
 
@@ -103,6 +112,7 @@ std::vector<uint16_t> wideString(uint32_t va) {
 #include "guest_charset.inc"
 #include "guest_virtual.inc"
 #include "guest_sync.inc"
+#include "guest_threads.inc"
 #include "guest_files.inc"
 #include "guest_timer.inc"
 #include "guest_version.inc"
@@ -116,6 +126,7 @@ std::vector<uint16_t> wideString(uint32_t va) {
 #include "guest_audio.inc"
 #include "guest_camera.inc"
 #include "guest_cursor.inc"
+#include "guest_winsock.inc"
 
 std::string moduleName(std::string name) {
     auto slash = name.find_last_of("/\\");
@@ -136,6 +147,8 @@ bool kernelDispatch(const std::string& name) {
     if (ddrawDispatch(name)) return true;
     if (inputDispatch(name)) return true;
     if (registryDispatch(name)) return true;
+    if (threadDispatch(name)) return true;
+    if (winsockDispatch(name)) return true;
     if(audioDispatch(name))return true;
     // The game handles unavailable movie decoding by skipping the intro.
     if(name=="_BinkOpen@8"){ret(0,2);return true;}
@@ -162,7 +175,9 @@ bool kernelDispatch(const std::string& name) {
         if (found == criticalSections.end()) throw std::runtime_error("Critical section not initialized");
         if (!found->second->mutex.try_lock()) {
             if (name == "TryEnterCriticalSection") { ret(0, 1); return true; }
-            throw std::runtime_error("Contended critical section needs guest thread scheduler");
+            // Owned by another guest thread: let it run until it leaves.
+            if (!otherThreadsRunnable()) throw std::runtime_error("Critical section deadlock: owner is not running");
+            while (!found->second->mutex.try_lock()) machineYield(1);
         }
         uint32_t count = ++found->second->count;
         MEM32(address + 4) = count - 1; MEM32(address + 8) = count; MEM32(address + 12) = 1;
@@ -185,21 +200,22 @@ bool kernelDispatch(const std::string& name) {
         uint32_t slot = 0;
         while (slot < tlsUsed.size() && tlsUsed[slot]) ++slot;
         if (slot == tlsUsed.size()) { kernelError(259); ret(UINT32_MAX, 0); }
-        else { tlsUsed[slot] = true; tlsValues[slot] = 0; ret(slot, 0); }
+        else { tlsUsed[slot] = true; tlsValues[slot] = 0; for (auto& thread : guestThreads) thread->tls[slot] = 0; ret(slot, 0); }
     } else if (name == "TlsGetValue" || name == "TlsSetValue" || name == "TlsFree") {
         uint32_t slot = arg(0);
         if (slot >= tlsUsed.size() || !tlsUsed[slot]) {
             kernelError(87); ret(0, name == "TlsSetValue" ? 2 : 1);
-        } else if (name == "TlsGetValue") { kernelError(0); ret(tlsValues[slot], 1); }
-        else if (name == "TlsSetValue") { tlsValues[slot] = arg(1); ret(1, 2); }
-        else { tlsUsed[slot] = false; tlsValues[slot] = 0; ret(1, 1); }
-    } else if (name == "GetLastError") { ret(lastError, 0);
+        } else if (name == "TlsGetValue") { kernelError(0); ret(currentThread ? currentThread->tls[slot] : tlsValues[slot], 1); }
+        else if (name == "TlsSetValue") { (currentThread ? currentThread->tls[slot] : tlsValues[slot]) = arg(1); ret(1, 2); }
+        else { tlsUsed[slot] = false; tlsValues[slot] = 0; for (auto& thread : guestThreads) thread->tls[slot] = 0; ret(1, 1); }
+    } else if (name == "GetLastError") { ret(MEM32((g_fs_base ? g_fs_base : kTibBase) + 0x34), 0);
     } else if (name == "SetLastError") { kernelError(arg(0)); ret(0, 1);
-    } else if (name == "GetCurrentThreadId" || name == "GetCurrentProcessId") { ret(1, 0);
+    } else if (name == "GetCurrentThreadId") { ret(currentThreadId(), 0);
+    } else if (name == "GetCurrentProcessId") { ret(1, 0);
     } else if (name == "GetCurrentThread") { ret(0xfffffffe, 0);
     } else if (name == "GetCurrentProcess") { ret(UINT32_MAX, 0);
     } else if (name == "GetThreadPriority" || name == "SetThreadPriority") {
-        if (arg(0) != 0xfffffffeu) { kernelError(6); ret(name == "GetThreadPriority" ? 0x7fffffffu : 0, name == "GetThreadPriority" ? 1 : 2); }
+        if (arg(0) != 0xfffffffeu && !threadByHandle(arg(0))) { kernelError(6); ret(name == "GetThreadPriority" ? 0x7fffffffu : 0, name == "GetThreadPriority" ? 1 : 2); }
         else if (name == "GetThreadPriority") ret(uint32_t(virtualThreadPriority), 1);
         else { int32_t value = int32_t(arg(1));
             if ((value < -2 || value > 2) && value != -15 && value != 15) { kernelError(87); ret(0, 2); }
@@ -265,6 +281,7 @@ bool kernelDispatch(const std::string& name) {
         extra |= module->first == "ddraw.dll" &&
             (symbol == "DirectDrawCreate" || symbol == "DirectDrawCreateEx" || symbol == "DirectDrawEnumerateExA" || symbol == "DirectDrawEnumerateA");
         extra |= module->first == "dinput.dll" && symbol == "DirectInputCreateEx";
+        extra |= module->first == "ws2_32.dll" && winsockNames.count(symbol);
         if (!extra) { kernelError(127); ret(0, 2); }
         else {
             uint32_t target = kImportBase + uint32_t(activeImports.size()) * 16;
@@ -314,7 +331,7 @@ bool kernelDispatch(const std::string& name) {
         MEM32(address) = value; ret(name == "InterlockedExchange" ? old : value, name == "InterlockedExchange" ? 2 : 1);
     } else if (name == "QueryPerformanceCounter" || name == "QueryPerformanceFrequency") {
         uint64_t value = name == "QueryPerformanceFrequency" ? 1000000000ULL :
-            uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+            uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(guestClock()).count());
         std::memcpy(kernelPtr(arg(0), 8, true), &value, 8); ret(1, 1);
     } else if (name == "RaiseException") {
         uint32_t code=arg(0);

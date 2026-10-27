@@ -120,17 +120,18 @@ public final class RtsTouchControllerTest {
         touch.setPlacing(false);sink.clear();
         System.out.println("RTS touch gesture tests passed");
 
-        // Frame-synchronised delivery: a click spans an engine input poll at any frame rate.
+        // Poll-synchronised delivery: frames() counts the engine's mouse reads;
+        // press and release must land in different reads, at any frame rate.
         Guest guest=new Guest();GameInput input=new GameInput(guest);
         input.click(.5f,.5f,0);input.move(.6f,.6f);input.pump(0);
-        require(guest.events.equals(java.util.List.of("0:true@0")),"Release was not held for a frame: "+guest.events);
-        guest.frame=1;input.pump(10);require(guest.events.size()==1,"Released after a single present");
-        guest.frame=2;input.pump(20);require(guest.events.contains("0:false@2")&&guest.events.get(2).equals("move"),"Click/rest order wrong: "+guest.events);
+        require(guest.events.equals(java.util.List.of("0:true@0")),"Release was not held for a read: "+guest.events);
+        input.pump(5);require(guest.events.size()==1,"Released before the engine read the press");
+        guest.frame=1;input.pump(10);require(guest.events.contains("0:false@1")&&guest.events.get(2).equals("move"),"Click/move order wrong: "+guest.events);
         // Parking after a release waits for the engine to read the release first.
         guest.events.clear();guest.frame=10;input.click(.5f,.5f,0);input.restAt(.2f,.2f);
-        for(int i=0;i<3;i++){input.pump(40+i);guest.frame++;}
-        require(guest.events.contains("0:false@12")&&!guest.events.contains("move"),"Cursor parked in the release frame: "+guest.events);
-        for(int i=0;i<3;i++){input.pump(50+i);guest.frame++;}
+        input.pump(40);guest.frame++;input.pump(41);
+        require(guest.events.contains("0:false@11")&&!guest.events.contains("move"),"Cursor parked in the release read: "+guest.events);
+        guest.frame++;input.pump(42);
         require(guest.events.get(guest.events.size()-1).equals("move"),"Cursor never parked");
         guest.frame=2;
         guest.events.clear();input.click(.5f,.5f,0);input.pump(30);input.pump(330);
@@ -139,6 +140,6 @@ public final class RtsTouchControllerTest {
         require(guest.events.contains("1:false@2"),"Clear did not release a held button");
         guest.events.clear();input.shiftClick(.5f,.5f);for(int i=0;i<8;i++){guest.frame++;input.pump(500+i);}
         require(guest.events.get(0).startsWith("key42:true")&&guest.events.get(guest.events.size()-1).startsWith("key42:false"),"Shift did not wrap the click");
-        System.out.println("Frame-synchronised input tests passed");
+        System.out.println("Poll-synchronised input tests passed");
     }
 }

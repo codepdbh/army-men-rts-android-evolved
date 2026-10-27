@@ -87,7 +87,7 @@ Java_com_codepdbh_armymenrts_LauncherActivity_nativeProbe(JNIEnv* env, jclass, j
         const auto& info=renderer.gpu();char gpu[192];
         std::snprintf(gpu,sizeof gpu,"GPU: %s / Vulkan %u.%u (minimo 1.1)\n",info.name.c_str(),
                       VK_API_VERSION_MAJOR(info.apiVersion),VK_API_VERSION_MINOR(info.apiVersion));
-        report+=gpu;
+        report+=gpu;report+="Driver: "+info.driver+"\n";
     }catch(const std::exception& error){report+=std::string("GPU: ")+error.what()+"\n";}
     report += "Recompilación ARM64 y puente DirectDraw/Direct3D 7 en desarrollo.";
     return env->NewStringUTF(report.c_str());
@@ -105,7 +105,7 @@ Java_com_codepdbh_armymenrts_GameProbeActivity_nativeCreateSession(JNIEnv*,jclas
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeCloseSession(JNIEnv*,jclass,jlong id){
-    std::lock_guard<std::mutex> lock(sessionMutex);auto found=sessions.find(uint64_t(id));if(found!=sessions.end()){found->second->stopped.store(true);sessions.erase(found);}
+    std::lock_guard<std::mutex> lock(sessionMutex);auto found=sessions.find(uint64_t(id));if(found!=sessions.end()){found->second->stopped.store(true);found->second->windowSwapped.notify_all();sessions.erase(found);}
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativePointer(JNIEnv*,jclass,jlong id,jfloat x,jfloat y,jint button,jboolean down){
@@ -128,7 +128,23 @@ Java_com_codepdbh_armymenrts_GameProbeActivity_nativeCursorKind(JNIEnv*,jclass,j
 extern "C" JNIEXPORT jint JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeDisplaySize(JNIEnv*,jclass,jlong id){auto control=session(uint64_t(id));return control?jint(control->displaySize.load()):0;}
 extern "C" JNIEXPORT jint JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeInputPolls(JNIEnv*,jclass,jlong id){auto control=session(uint64_t(id));return control?jint(control->inputPolls.load()):0;}
+extern "C" JNIEXPORT jint JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeFrames(JNIEnv*,jclass,jlong id){auto control=session(uint64_t(id));return control?jint(control->frames.load()):0;}
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativePause(JNIEnv*,jclass,jlong id,jboolean paused){auto control=session(uint64_t(id));if(control)control->paused.store(bool(paused));}
+// Hand the game a new surface (null: the old one is going away). Blocks until
+// the game thread has swapped it, so a destroyed surface is never presented to.
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GameProbeActivity_nativeSetWindow(JNIEnv* env,jclass,jlong id,jobject surface){
+    auto control=session(uint64_t(id));if(!control)return;
+    ANativeWindow* window=surface?ANativeWindow_fromSurface(env,surface):nullptr;
+    std::unique_lock<std::mutex> lock(control->windowMutex);
+    if(control->requestedWindow)ANativeWindow_release(control->requestedWindow);
+    control->requestedWindow=window;uint64_t request=++control->windowRequests;control->windowPending=true;
+    if(!control->windowSwapped.wait_for(lock,std::chrono::seconds(3),[&]{return control->windowServed>=request||control->stopped.load();}))
+        __android_log_print(ANDROID_LOG_WARN,"AMRTS","Window swap timed out");
+}
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_codepdbh_armymenrts_GameProbeActivity_nativeVisualProbe(JNIEnv* env,jclass,jstring dataPath,jobject surface,jlong id){
 #ifdef AMRTS_LINK_GUEST
@@ -138,8 +154,24 @@ Java_com_codepdbh_armymenrts_GameProbeActivity_nativeVisualProbe(JNIEnv* env,jcl
     std::string result;
     try{PeImage image;PeImageInfo info=image.load(root+"/AMRTS.EXE");result=probeGuestBoot(image,info,window,control);}
     catch(const std::exception& error){result=error.what();}
-    ANativeWindow_release(window);__android_log_print(ANDROID_LOG_INFO,"AMRTS","Visual run: %s",result.c_str());return env->NewStringUTF(result.c_str());
+    ANativeWindow_release(window);
+    {std::lock_guard<std::mutex> lock(control->windowMutex);
+     for(auto** owned:{&control->requestedWindow,&control->shownWindow})if(*owned){ANativeWindow_release(*owned);*owned=nullptr;}
+     control->windowServed=control->windowRequests;control->windowPending=false;control->windowSwapped.notify_all();}
+    __android_log_print(ANDROID_LOG_INFO,"AMRTS","Visual run: %s",result.c_str());return env->NewStringUTF(result.c_str());
 #else
     return env->NewStringUTF("Compile with -PamrtsLinkGuest");
 #endif
+}
+
+namespace {
+std::string javaString(JNIEnv* env,jstring value){
+    if(!value)return {};const char* chars=env->GetStringUTFChars(value,nullptr);std::string result(chars);env->ReleaseStringUTFChars(value,chars);return result;
+}
+}
+// Vulkan driver for the next renderer: an imported one (folder + .so name) or
+// the system driver when `library` is empty.
+extern "C" JNIEXPORT void JNICALL
+Java_com_codepdbh_armymenrts_GpuDrivers_nativeSelect(JNIEnv* env,jclass,jstring folder,jstring library,jstring hooks,jstring cache){
+    selectVulkanDriver(javaString(env,folder),javaString(env,library),javaString(env,hooks),javaString(env,cache));
 }

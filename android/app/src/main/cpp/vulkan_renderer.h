@@ -1,5 +1,5 @@
 #pragma once
-#include <vulkan/vulkan.h>
+#include "vulkan_dispatch.h"
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -29,6 +29,7 @@ struct VulkanGpuInfo {
     std::string name;
     uint32_t apiVersion=0, driverVersion=0, vendorId=0, deviceId=0, maxTextureSize=0;
     uint64_t deviceMemory=0;
+    std::string driver; // driver name/info and which library provided it
 };
 struct VulkanVertex {float position[4],color[4],uv0[2],uv1[2];};
 struct VulkanDrawState {
@@ -59,12 +60,17 @@ public:
     void clearSurface(VulkanSurface& surface,uint32_t argb,float depth);
     void clearRegions(VulkanSurface& target,VulkanSurface* depth,uint32_t flags,uint32_t argb,float value,const std::vector<VkRect2D>& regions);
     void setWindow(ANativeWindow* window);
+    // Drops the swapchain and surface (Android destroyed the window); frames
+    // are then rendered but not shown until setWindow gets a new one.
+    void releaseWindow();
     void present(VulkanSurface& surface);
     void flushDraws();
     void draw(VulkanSurface& target,VulkanSurface* depth,VulkanSurface* texture0,VulkanSurface* texture1,
               const std::vector<VulkanVertex>& vertices,const std::vector<uint16_t>& indices,const VulkanDrawState& state);
     bool supportsOptimalFormat(VkFormat format,VkFormatFeatureFlags flags) const;
 private:
+    void createInstance();
+    void createDeviceObjects(bool createDevice);
     uint32_t memoryType(uint32_t bits,VkMemoryPropertyFlags required,VkMemoryPropertyFlags preferred=0) const;
     VkInstance instance_=VK_NULL_HANDLE;
     VkPhysicalDevice physical_=VK_NULL_HANDLE;

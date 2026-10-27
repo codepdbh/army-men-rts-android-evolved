@@ -47,11 +47,14 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
     private static native void nativeVolume(long session,int volume);
     private static native int nativeFrames(long session);
     private static native int nativeCursorKind(long session);
+    private static native int nativeInputPolls(long session);
     private static native int nativeDisplaySize(long session);
+    private static native void nativePause(long session,boolean paused);
+    private static native void nativeSetWindow(long session,Surface surface);
     private static native String nativeVisualProbe(String folder,Surface surface,long session);
     // DirectInput scan codes used by the overlay.
     // Bindings from the game's own if_game_keybind.cfg (client/p/ingame.x).
-    private static final int ESCAPE=1,ENTER=28,CONTROL=29,SHIFT=42,ALT=56,SPACE=57,
+    private static final int ESCAPE=1,ENTER=28,BACKSPACE=14,CONTROL=29,SHIFT=42,ALT=56,SPACE=57,
         E_SELECT_ALL=18,G_SELECT_TYPE=34,S_STOP=31,H_HEADQUARTERS=35,U_UPGRADE=22,P_PAUSE=25,C_COMMS=46,D_KEY=32,
         PREV_UNIT=26,NEXT_UNIT=27,PREV_DIR=51,NEXT_DIR=52,F1=59,F8=66,F9=67,F10=68;
     private final Handler handler=new Handler(Looper.getMainLooper());
@@ -65,6 +68,9 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
     private boolean placing,touching;
     private long constructSeen;
     private float fingerX,fingerY;
+    // Many Wi-Fi drivers drop broadcast/multicast frames unless an app holds this;
+    // StyxNet finds LAN sessions by UDP broadcast.
+    private android.net.wifi.WifiManager.MulticastLock multicast;
     private PopupWindow popup;
     private RtsTouchController touch;
     private SharedPreferences preferences;
@@ -76,7 +82,7 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
         public void key(int scan,boolean down){nativeKey(session,scan,down);}
         public void motion(float dx,float dy){nativeMotion(session,dx,dy);}
         public void wheel(int steps){nativeWheel(session,steps);}
-        public int frames(){return nativeFrames(session);}
+        public int frames(){return nativeInputPolls(session);}
     });
     private final Runnable inputPump=new Runnable(){public void run(){
         if(session!=0){input.pump(SystemClock.uptimeMillis());updateCursorState();}
@@ -324,8 +330,8 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
     private void showMenu(){
         cancelGesture();
         LinearLayout actions=new LinearLayout(this);actions.setOrientation(LinearLayout.VERTICAL);actions.setPadding(dp(8),dp(8),dp(8),dp(8));
-        String[] labels={"Menu del juego y objetivos (Esc)","Pausa (P)","Mejorar (U)","Unidad anterior ( [ )","Unidad siguiente ( ] )","Altura de camara","Guardado rapido (F9)","Carga rapida (F10)","Guardar / cargar (F8)","Comunicaciones (C)","Autodestruir seleccion","Aceptar (Intro)","Volumen",tools.getVisibility()==View.VISIBLE?"Ocultar botones de accion":"Mostrar botones de accion","Controles y sensibilidad"};
-        Runnable[] callbacks={()->input.tapKey(ESCAPE),()->input.tapKey(P_PAUSE),()->input.tapKey(U_UPGRADE),()->input.tapKey(PREV_UNIT),()->input.tapKey(NEXT_UNIT),
+        String[] labels={"Escribir texto (teclado)","Menu del juego y objetivos (Esc)","Pausa (P)","Mejorar (U)","Unidad anterior ( [ )","Unidad siguiente ( ] )","Altura de camara","Guardado rapido (F9)","Carga rapida (F10)","Guardar / cargar (F8)","Comunicaciones (C)","Autodestruir seleccion","Aceptar (Intro)","Volumen",tools.getVisibility()==View.VISIBLE?"Ocultar botones de accion":"Mostrar botones de accion","Controles y sensibilidad"};
+        Runnable[] callbacks={()->showKeyboard(),()->input.tapKey(ESCAPE),()->input.tapKey(P_PAUSE),()->input.tapKey(U_UPGRADE),()->input.tapKey(PREV_UNIT),()->input.tapKey(NEXT_UNIT),
             ()->showCameraHeights(),()->input.tapKey(F9),()->input.tapKey(F10),()->input.tapKey(F8),()->input.tapKey(C_COMMS),()->confirmSelfDestruct(),
             ()->input.tapKey(ENTER),()->showVolume(),()->{
             boolean show=tools.getVisibility()!=View.VISIBLE;tools.setVisibility(show?View.VISIBLE:View.GONE);preferences.edit().putBoolean("tools",show).apply();},()->showGestures()};
@@ -380,7 +386,9 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
     }
     private void startRun(){
         if(!resumed||session!=0||!game.getHolder().getSurface().isValid())return;
-        long current=nativeCreateSession();session=current;finished=false;nativeVolume(current,masterVolume());Surface surface=game.getHolder().getSurface();Thread previous=worker;
+        GpuDrivers.apply(this);
+        long current=nativeCreateSession();session=current;finished=false;
+        try{if(multicast==null){multicast=((android.net.wifi.WifiManager)getApplicationContext().getSystemService(WIFI_SERVICE)).createMulticastLock("amrts-lan");multicast.setReferenceCounted(false);}multicast.acquire();}catch(RuntimeException ignored){}nativeVolume(current,masterVolume());Surface surface=game.getHolder().getSurface();Thread previous=worker;
         status.setVisibility(View.VISIBLE);status.setText("Cargando Army Men RTS...");rebuildTouch();
         handler.removeCallbacks(inputPump);handler.post(inputPump);
         worker=new Thread(()->{
@@ -393,18 +401,89 @@ public final class GameProbeActivity extends Activity implements SurfaceHolder.C
     }
     private void stopRun(){
         cancelGesture();input.clear();handler.removeCallbacks(inputPump);
+        if(multicast!=null&&multicast.isHeld())multicast.release();
         long current=session;session=0;if(current!=0)nativeCloseSession(current);if(popup!=null)popup.dismiss();
     }
-    @Override protected void onResume(){super.onResume();resumed=true;startRun();}
-    @Override protected void onPause(){resumed=false;stopRun();super.onPause();}
-    @Override public void surfaceCreated(SurfaceHolder holder){startRun();}
+    // Leaving the app pauses the running game instead of closing it; the
+    // renderer drops its surface while Android has none and takes the new one.
+    private boolean running(){return session!=0&&!finished;}
+    @Override protected void onResume(){
+        super.onResume();resumed=true;
+        if(session!=0&&finished)stopRun();
+        if(running()){nativePause(session,false);handler.removeCallbacks(inputPump);handler.post(inputPump);}else startRun();
+    }
+    @Override protected void onPause(){
+        resumed=false;
+        if(running()){cancelGesture();input.clear();handler.removeCallbacks(inputPump);nativePause(session,true);}
+        super.onPause();
+    }
+    @Override protected void onDestroy(){stopRun();super.onDestroy();}
+    @Override public void surfaceCreated(SurfaceHolder holder){if(running())nativeSetWindow(session,holder.getSurface());else startRun();}
     @Override public void surfaceChanged(SurfaceHolder holder,int format,int width,int height){rebuildTouch();}
-    @Override public void surfaceDestroyed(SurfaceHolder holder){stopRun();}
+    @Override public void surfaceDestroyed(SurfaceHolder holder){if(running())nativeSetWindow(session,null);}
+    /** DirectInput scan code of a printable character (US layout), 0 if none. */
+    static int scanOf(char c){
+        String rows="qwertyuiop",middle="asdfghjkl",bottom="zxcvbnm";c=Character.toLowerCase(c);
+        if(rows.indexOf(c)>=0)return 16+rows.indexOf(c);
+        if(middle.indexOf(c)>=0)return 30+middle.indexOf(c);
+        if(bottom.indexOf(c)>=0)return 44+bottom.indexOf(c);
+        if(c>='1'&&c<='9')return 2+(c-'1');
+        switch(c){case '0':return 11;case ' ':return 57;case '-':return 12;case '=':return 13;case ',':return 51;case '.':return 52;
+            case '/':return 53;case ';':return 39;case '\'':return 40;case '[':return 26;case ']':return 27;}
+        return 0;
+    }
+    /** Type text into the game (names, chat): Android keyboard -> scan codes. */
+    private void typeText(String text){
+        for(char c:text.toCharArray()){
+            int scan=scanOf(c);if(scan==0)continue;
+            if(Character.isUpperCase(c))input.chord(SHIFT,scan);else input.tapKey(scan);
+        }
+    }
+    // The game's text can't be read back, so "replace" moves to the end and
+    // erases up to the longest field the game offers before typing.
+    private static final int END=207,FIELD_CHARS=40;
+    private static String lastTyped="";
+    private void clearGameField(){input.tapKey(END);for(int i=0;i<FIELD_CHARS;i++)input.tapKey(BACKSPACE);}
+    private void showKeyboard(){
+        android.widget.EditText field=new android.widget.EditText(this);field.setSingleLine(true);field.setHint("Texto (antes toca el campo del juego)");
+        field.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        field.setText(lastTyped);field.selectAll();field.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE|android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI|android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN);
+        // Compact and pinned to the top so the soft keyboard never covers it.
+        LinearLayout box=new LinearLayout(this);box.setPadding(dp(20),dp(12),dp(20),0);box.setOrientation(LinearLayout.VERTICAL);box.addView(field,new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout options=new LinearLayout(this);box.addView(options);
+        android.widget.CheckBox replace=new android.widget.CheckBox(this);replace.setText("Reemplazar texto");replace.setChecked(true);options.addView(replace);
+        android.widget.CheckBox enter=new android.widget.CheckBox(this);enter.setText("Intro al terminar");enter.setChecked(true);options.addView(enter);
+        Runnable send=()->{
+            String text=field.getText().toString();lastTyped=text;
+            if(replace.isChecked())clearGameField();
+            typeText(text);if(enter.isChecked())input.tapKey(ENTER);
+        };
+        AlertDialog dialog=new AlertDialog.Builder(this)
+            .setView(box).setNeutralButton("Borrar todo",(d,w)->clearGameField())
+            .setPositiveButton("Escribir",(d,w)->send.run())
+            .setNegativeButton("Cancelar",null).create();
+        field.setOnEditorActionListener((view,action,event)->{send.run();dialog.dismiss();return true;});
+        dialog.getWindow().setGravity(Gravity.TOP);
+        dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE|WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);dialog.show();
+    }
+    /** Scan code for an Android key (physical keyboards), 0 if unmapped. */
+    private static int scanOfKey(int key,KeyEvent event){
+        switch(key){
+            case KeyEvent.KEYCODE_ENTER:case KeyEvent.KEYCODE_NUMPAD_ENTER:return ENTER;case KeyEvent.KEYCODE_ESCAPE:return ESCAPE;
+            case KeyEvent.KEYCODE_DEL:return BACKSPACE;case KeyEvent.KEYCODE_TAB:return 15;
+            case KeyEvent.KEYCODE_SHIFT_LEFT:case KeyEvent.KEYCODE_SHIFT_RIGHT:return SHIFT;
+            case KeyEvent.KEYCODE_CTRL_LEFT:case KeyEvent.KEYCODE_CTRL_RIGHT:return CONTROL;
+            case KeyEvent.KEYCODE_ALT_LEFT:case KeyEvent.KEYCODE_ALT_RIGHT:return ALT;
+            case KeyEvent.KEYCODE_DPAD_UP:return 200;case KeyEvent.KEYCODE_DPAD_DOWN:return 208;case KeyEvent.KEYCODE_DPAD_LEFT:return 203;case KeyEvent.KEYCODE_DPAD_RIGHT:return 205;
+        }
+        if(key>=KeyEvent.KEYCODE_F1&&key<=KeyEvent.KEYCODE_F10)return F1+(key-KeyEvent.KEYCODE_F1);
+        int unicode=event.getUnicodeChar(0);return unicode>0?scanOf((char)unicode):0;
+    }
     @Override public boolean onKeyDown(int key,KeyEvent event){
-        if(key==KeyEvent.KEYCODE_ENTER||key==KeyEvent.KEYCODE_ESCAPE){input.key(key==KeyEvent.KEYCODE_ENTER?ENTER:ESCAPE,true);return true;}return super.onKeyDown(key,event);
+        int scan=scanOfKey(key,event);if(scan!=0){input.key(scan,true);return true;}return super.onKeyDown(key,event);
     }
     @Override public boolean onKeyUp(int key,KeyEvent event){
-        if(key==KeyEvent.KEYCODE_ENTER||key==KeyEvent.KEYCODE_ESCAPE){input.key(key==KeyEvent.KEYCODE_ENTER?ENTER:ESCAPE,false);return true;}return super.onKeyUp(key,event);
+        int scan=scanOfKey(key,event);if(scan!=0){input.key(scan,false);return true;}return super.onKeyUp(key,event);
     }
     @Override public void onBackPressed(){input.tapKey(ESCAPE);}
 }

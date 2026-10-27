@@ -497,7 +497,7 @@ void graphicsMethod(){
     if(index==13){write32(arg(1),0);ret(0,3);return;}
     if(index==15){write32(arg(1),owner->refresh);ret(0,2);return;}
     if(index==16||index==17){
-        uint64_t nanos=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        uint64_t nanos=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(guestClock()).count());
         uint32_t line=uint32_t((nanos%(1000000000/owner->refresh))*owner->height/(1000000000/owner->refresh));
         write32(arg(1),index==16?line:line+1>=owner->height);ret(0,2);return;
     }

@@ -21,6 +21,8 @@
 #include <sys/syscall.h>
 #include <cerrno>
 #include <deque>
+#include <condition_variable>
+#include <atomic>
 #include <set>
 #include "guest_heap.h"
 #include "pe_version.h"
@@ -51,6 +53,21 @@ std::mutex machineLock;
 ANativeWindow* presentationWindow=nullptr;
 std::shared_ptr<GuestRunControl> runControl;
 void pumpAndroidInput();
+void serviceAndroidWindow();
+void pauseGuestAudio(bool paused);
+void machineTimeSlice();
+// Guest time excludes time spent paused in the background, so the engine
+// does not try to catch up on resume.
+std::chrono::steady_clock::duration pausedTime{};
+std::chrono::steady_clock::duration guestClock(){return std::chrono::steady_clock::now().time_since_epoch()-pausedTime;}
+void waitWhilePaused(){
+    auto start=std::chrono::steady_clock::now();
+    pauseGuestAudio(true);
+    while(runControl->paused.load()&&!runControl->stopped.load()){serviceAndroidWindow();std::this_thread::sleep_for(std::chrono::milliseconds(20));}
+    pauseGuestAudio(false);
+    pausedTime+=std::chrono::steady_clock::now()-start;
+}
+void winsockPoll();
 
 std::string addressText(uint32_t va) {
     char buf[16];
@@ -58,8 +75,12 @@ std::string addressText(uint32_t va) {
     return buf;
 }
 void progressCheck() {
+    if(runControl&&runControl->paused.load())waitWhilePaused();
     if(runControl&&runControl->stopped.load())throw std::runtime_error("Sesion detenida");
+    serviceAndroidWindow();
     pumpAndroidInput();
+    winsockPoll();
+    machineTimeSlice();
     if (!runControl&&std::chrono::steady_clock::now() > deadline)
         throw std::runtime_error("Tiempo de arranque agotado en 0x" + addressText(g_cur_func));
 }
@@ -128,7 +149,8 @@ uint32_t allocate(uint32_t bytes) {
     return address;
 }
 void checkGuestProgress() { progressCheck(); }
-void yieldGuestMachine(unsigned ms) { progressCheck(); if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+void machineYield(unsigned sleepMs);
+void yieldGuestMachine(unsigned ms) { progressCheck(); machineYield(ms); }
 #include "guest_kernel.inc"
 uint32_t callGuest(uint32_t va, const std::vector<uint32_t>& args) {
     MachineState state;
@@ -147,6 +169,7 @@ uint32_t callGuest(uint32_t va, const std::vector<uint32_t>& args) {
 #include "guest_input_tests.inc"
 struct BootCleanup {
     ~BootCleanup() {
+        stopGuestThreads();
         recomp_yield_hook = nullptr;
         activeInfo = nullptr;
         activeImports.clear();
@@ -270,6 +293,8 @@ std::string probeGuestBoot(PeImage& image, const PeImageInfo& info,ANativeWindow
     recomp_yield_hook = progressCheck;
     std::string result;
     try {
+        // The session thread becomes guest thread 1 and takes the machine.
+        startGuestThreads();
         auto entry = recomp_lookup(info.entry);
         if (!entry) throw std::runtime_error("La entrada no esta recompilada");
         entry();
